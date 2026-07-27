@@ -16,7 +16,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "UMLicensing"
+            name: "UMLicensing",
+            resources: [
+                .process("MailTemplate.txt")
+            ]
         ),
         .testTarget(
             name: "UMLicensingTests",

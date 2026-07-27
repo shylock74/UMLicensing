@@ -12,6 +12,7 @@
 //  comunque disattivato.
 //
 
+import AppKit
 import Foundation
 
 
@@ -33,35 +34,126 @@ struct TrialMailer: Sendable {
 
 	// MARK: - Template
 
-	/// Sostituisce nel template i placeholder `%%License.*%%`.
+	/// Il template incluso nel package (`MailTemplate.txt`).
 	///
-	/// ⚠️ `%%License.appName%%` e `%%License.downloadAppUrl%%` sono miei: nel `d5` che
-	/// ho visto ci sono solo `username`, `appId`, `serialId` e `expDate`. Se nel tuo
-	/// template attuale il link di download ha un altro nome (in `SendEmail` compare
-	/// `%%DOWNLOADAPP%%`, commentato), aggiungilo qui — le sostituzioni non applicate
-	/// non danno errore, lasciano il placeholder visibile nell'email.
-	static func body (template: String,
-					  username: String,
-					  appId: String,
-					  appName: String,
-					  serialId: String,
-					  expDate: Date,
-					  downloadAppUrl: String) -> String {
+	/// È il default per tutte le app. Chi ne vuole uno diverso passa `mailBody`
+	/// a `licensed()`.
+	static func defaultTemplate () -> String {
+		guard let url = Bundle.module.url (forResource: "MailTemplate", withExtension: "txt"),
+			  let text = try? String (contentsOf: url, encoding: .utf8) else {
+			return ""
+		}
+		return text
+	}
+
+
+	/// I valori che riempiono i `%%…%%` del template.
+	struct Fields: Sendable {
+		var username:       String
+		var appId:          String
+		var appName:        String
+		var serialId:       String
+		var expDate:        Date
+		var downloadAppUrl: String
+		var logoImageUrl:   String
+		var logoImageAlt:   String
+		/// Componenti nella forma `15, 23, 42`: il template le usa dentro `rgb(…)`.
+		var backgroundRGB:  String
+		var accentRGB:      String
+	}
+
+
+	/// Sostituisce nel template tutti i placeholder `%%…%%`.
+	///
+	/// `%%BUILD%%` e `%%YEAR%%` non sono parametri: vengono da `Bundle.main` e
+	/// dalla data corrente, così non c'è modo di dimenticarsi di aggiornarli.
+	static func body (template: String, fields f: Fields) -> String {
 
 		var body = template
+
+		// Un logo con src vuoto viene disegnato dai client email come icona rotta.
+		// Meglio togliere l'intero blocco che spedire un'email visibilmente difettosa.
+		if f.logoImageUrl.isEmpty {
+			body = removingLogoBlock (from: body)
+		}
+
 		let replacements = [
-			"%%License.username%%":        username,
-			"%%License.appId%%":           appId,
-			"%%License.appName%%":         appName,
-			"%%License.serialId%%":        serialId,
-			"%%License.expDate%%":         Compat.du_formatDate (expDate, formatter: "dd MMMM yyyy"),
-			"%%License.downloadAppUrl%%":  downloadAppUrl,
-			"%%DOWNLOADAPP%%":             downloadAppUrl,
+			// Nomi usati da MailTemplate.txt
+			"%%License.username%%":  f.username,
+			"%%License.serialId%%":  f.serialId,
+			"%%License.expDate%%":   Compat.du_formatDate (f.expDate, formatter: "dd MMMM yyyy"),
+			"%%APPNAME%%":           f.appName,
+			"%%DOWNLOADAPP%%":       f.downloadAppUrl,
+			"%%LogoImageUrl%%":      f.logoImageUrl,
+			"%%LogoImageAlt%%":      f.logoImageAlt.isEmpty ? f.appName : f.logoImageAlt,
+			"%%BG_RGB%%":            f.backgroundRGB,
+			"%%ACCENT_RGB%%":        f.accentRGB,
+			"%%BUILD%%":             currentBuild (),
+			"%%YEAR%%":              currentYear (),
+
+			// Nomi del vecchio `d5`, tenuti per i template già in circolazione.
+			"%%License.appId%%":          f.appId,
+			"%%License.appName%%":        f.appName,
+			"%%License.downloadAppUrl%%": f.downloadAppUrl,
 		]
+
 		for (placeholder, value) in replacements {
 			body = Compat.strUt_searchAndReplace (originalText: body, search: placeholder, replace: value)
 		}
 		return body
+	}
+
+
+	/// Rimuove il `<div>` che avvolge `<img src="%%LogoImageUrl%%">`.
+	private static func removingLogoBlock (from template: String) -> String {
+		guard let imgRange = template.range (of: "%%LogoImageUrl%%"),
+			  let divStart = template.range (of: "<div", options: .backwards, range: template.startIndex ..< imgRange.lowerBound),
+			  let divEnd = template.range (of: "</div>", range: imgRange.upperBound ..< template.endIndex) else {
+			return template
+		}
+		return template.replacingCharacters (in: divStart.lowerBound ..< divEnd.upperBound, with: "")
+	}
+
+
+	// MARK: - Valori automatici
+
+	/// Versione commerciale e numero di build, es. `2.1.0 (1234)`.
+	///
+	/// È la coppia che serve al supporto: la prima dice all'utente cosa ha comprato,
+	/// la seconda identifica il binario esatto.
+	static func currentBuild (bundle: Bundle = .main) -> String {
+		let info = bundle.infoDictionary
+		let short = info? ["CFBundleShortVersionString"] as? String ?? ""
+		let build = info? ["CFBundleVersion"] as? String ?? ""
+
+		switch (short.isEmpty, build.isEmpty) {
+			case (false, false): return "\(short) (\(build))"
+			case (false, true):  return short
+			case (true, false):  return build
+			case (true, true):   return "-"
+		}
+	}
+
+
+	static func currentYear (date: Date = Date ()) -> String {
+		Compat.du_formatDate (date, formatter: "yyyy")
+	}
+
+
+	/// Componenti sRGB nella forma `15, 23, 42`, pronte per finire dentro `rgb(…)`
+	/// e `rgba(…, 0.7)` del template.
+	///
+	/// La conversione a sRGB è necessaria perché un `NSColor` preso dagli Assets può
+	/// essere in un altro color space (o essere dinamico light/dark): senza conversione
+	/// `redComponent` va in crash.
+	@MainActor
+	static func rgbComponents (_ color: NSColor) -> String {
+		guard let c = color.usingColorSpace (.sRGB) else { return "0, 0, 0" }
+
+		let r = Int ((c.redComponent   * 255).rounded ())
+		let g = Int ((c.greenComponent * 255).rounded ())
+		let b = Int ((c.blueComponent  * 255).rounded ())
+		return "\(r), \(g), \(b)"
 	}
 
 

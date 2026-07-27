@@ -36,6 +36,22 @@ actor LicenseServer {
 
 	// MARK: - Errori
 
+	/// Licenza come arriva dal server.
+	///
+	/// Le date sono opzionali di proposito: `nil` significa "il server ha risposto in
+	/// un formato che non sappiamo leggere", che è diverso da "campo vuoto" (licenza
+	/// perpetua). Confondere i due casi faceva risultare scaduta una licenza appena
+	/// attivata, perché una data illeggibile finiva nell'anno 0.
+	struct RemoteLicense: Sendable {
+		var license: LicenseData
+		var expDate: Date?
+		var regDate: Date?
+
+		var serialId: String { license.serialId }
+		var machId: String   { license.machId }
+	}
+
+
 	enum ServerError: Error, Sendable {
 		/// Il server non è raggiungibile. Distinto dal rifiuto: qui scatta il grace period.
 		case unreachable
@@ -50,7 +66,7 @@ actor LicenseServer {
 
 	/// Recupera la licenza associata a questa macchina. È il primo passo dell'avvio:
 	/// permette a chi reinstalla l'app di ritrovare la licenza senza reinserire il seriale.
-	func getDataByMachId (appId: String, machId: String) async throws -> LicenseData {
+	func getDataByMachId (appId: String, machId: String) async throws -> RemoteLicense {
 		let response = try await get ([
 			("action",    "getDataByMachId"),
 			("appId",     appId),
@@ -66,7 +82,7 @@ actor LicenseServer {
 
 
 	/// Legge dal server lo stato di un seriale (a chi è intestato, su che macchina).
-	func getData (appId: String, serialId: String) async throws -> LicenseData {
+	func getData (appId: String, serialId: String) async throws -> RemoteLicense {
 		let response = try await get ([
 			("action",    "getData"),
 			("appId",     appId),
@@ -181,11 +197,14 @@ actor LicenseServer {
 	///
 	/// Il campo `validator` è l'md5 del blocco `data`: se non torna, la risposta non
 	/// arriva davvero dal nostro server (o è stata intercettata) e va scartata.
-	private func parseLicense (from response: String) throws -> LicenseData {
+	private func parseLicense (from response: String) throws -> RemoteLicense {
 		let data      = Compat.encapsulateGetValue (srcText: response, label: "data")
 		let validator = Compat.encapsulateGetValue (srcText: response, label: "validator")
 
 		guard LicenseValidator.hash (data) == validator else {
+			// Campi vuoti su una risposta non vuota = il delimitatore assunto da
+			// `encapsulateGetValue` non è quello che usa il server.
+			Diagnostics.log ("validator non corrispondente. data=\"\(data)\" validator=\"\(validator)\"")
 			throw ServerError.notValidated
 		}
 
@@ -201,15 +220,25 @@ actor LicenseServer {
 		let regDateS = Compat.encapsulateGetValue (srcText: data, label: "regDate")
 		let expDateS = Compat.encapsulateGetValue (srcText: data, label: "expDate")
 
-		// Data assente = licenza perpetua. Il vecchio codice usava 1/1/2100.
-		license.regDate = regDateS.isEmpty
-			? Compat.du_createDate (d: 1, m: 1, y: 2100)
-			: Compat.du_createDateFormStandardString (regDateS)
-		license.expDate = expDateS.isEmpty
-			? Compat.du_createDate (d: 1, m: 1, y: 2100)
-			: Compat.du_createDateFormStandardString (expDateS)
+		// Tre casi da tenere distinti:
+		//  - campo vuoto        → licenza perpetua, il vecchio codice usava 1/1/2100
+		//  - data leggibile     → la usiamo
+		//  - data illeggibile   → `nil`: il server ha risposto in un formato che non
+		//                         conosciamo e NON possiamo inventare una scadenza,
+		//                         altrimenti una licenza appena attivata risulta scaduta.
+		let parsedExp = expDateS.isEmpty ? Compat.du_createDate (d: 1, m: 1, y: 2100)
+										 : Compat.du_parseServerDate (expDateS)
+		let parsedReg = regDateS.isEmpty ? Compat.du_createDate (d: 1, m: 1, y: 2100)
+										 : Compat.du_parseServerDate (regDateS)
 
-		return license
+		if let parsedExp { license.expDate = parsedExp }
+		if let parsedReg { license.regDate = parsedReg }
+
+		if parsedExp == nil {
+			Diagnostics.log ("expDate illeggibile dal server: \"\(expDateS)\" — mantengo la scadenza locale")
+		}
+
+		return RemoteLicense (license: license, expDate: parsedExp, regDate: parsedReg)
 	}
 
 
@@ -223,10 +252,15 @@ actor LicenseServer {
 
 		guard let url = components.url else { throw ServerError.unreachable }
 
+		Diagnostics.log ("GET \(params.first?.1 ?? "?") -> \(url.absoluteString)")
+
 		do {
 			let (data, _) = try await session.data (from: url)
-			return String (decoding: data, as: UTF8.self)
+			let response = String (decoding: data, as: UTF8.self)
+			Diagnostics.logResponse (params.first?.1 ?? "?", response)
+			return response
 		} catch {
+			Diagnostics.log ("GET fallita: \(error.localizedDescription)")
 			throw ServerError.unreachable
 		}
 	}
@@ -245,9 +279,12 @@ actor LicenseServer {
 
 		do {
 			let (data, _) = try await session.data (for: request)
-			return String (decoding: data, as: UTF8.self)
+			let response = String (decoding: data, as: UTF8.self)
 				.replacingOccurrences (of: "<br>", with: "")
+			Diagnostics.logResponse (params ["action"] ?? "?", response)
+			return response
 		} catch {
+			Diagnostics.log ("POST fallita: \(error.localizedDescription)")
 			throw ServerError.unreachable
 		}
 	}

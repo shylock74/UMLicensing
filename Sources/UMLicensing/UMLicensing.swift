@@ -40,7 +40,12 @@ public enum UMLicensing {
 	///   - previousVersionPrefix: prefisso della versione precedente, accettato in più.
 	///   - purchaseUrl: pagina di acquisto, aperta dal pulsante "Buy a License".
 	///   - downloadAppUrl: link di download inserito nell'email del trial.
-	///   - mailBody: template HTML dell'email del trial, con i placeholder `%%License.*%%`.
+	///   - logoImageUrl: logo dell'app mostrato in cima all'email del trial.
+	///   - logoImageAlt: testo alternativo del logo. Se vuoto viene usato `appName`.
+	///   - mailBackgroundColor: colore di fondo dell'email.
+	///   - mailAccentColor: colore dei dettagli dell'email (bordi, pulsante, link).
+	///   - mailBody: template HTML alternativo. Se vuoto viene usato `MailTemplate.txt`
+	///     incluso nel package.
 	///   - trialExpDays: durata del periodo di prova.
 	///   - graceDays: per quanti giorni la licenza resta valida senza riuscire a
 	///     contattare il server. Oltre questa soglia il controllo online torna obbligatorio.
@@ -55,6 +60,10 @@ public enum UMLicensing {
 								 previousVersionPrefix: String = "",
 								 purchaseUrl:           String,
 								 downloadAppUrl:        String = "",
+								 logoImageUrl:          String,
+								 logoImageAlt:          String = "",
+								 mailBackgroundColor:   NSColor = .umLicensingMailBackground,
+								 mailAccentColor:       NSColor = .umLicensingMailAccent,
 								 mailBody:              String = "",
 								 trialExpDays:          Int = 7,
 								 graceDays:             Int = 30,
@@ -67,7 +76,13 @@ public enum UMLicensing {
 							   previousVersionPrefix: previousVersionPrefix,
 							   purchaseUrl:           purchaseUrl,
 							   downloadAppUrl:        downloadAppUrl,
-							   mailBody:              mailBody,
+							   logoImageUrl:          logoImageUrl,
+							   logoImageAlt:          logoImageAlt,
+							   // I colori vengono risolti subito in componenti sRGB:
+							   // `NSColor` non è `Sendable` e non può viaggiare nel Context.
+							   backgroundRGB:         TrialMailer.rgbComponents (mailBackgroundColor),
+							   accentRGB:             TrialMailer.rgbComponents (mailAccentColor),
+							   mailBody:              mailBody.isEmpty ? TrialMailer.defaultTemplate () : mailBody,
 							   trialExpDays:          trialExpDays,
 							   graceDays:             graceDays,
 							   serverUrl:             serverUrl)
@@ -96,6 +111,10 @@ public enum UMLicensing {
 		let previousVersionPrefix: String
 		let purchaseUrl:           String
 		let downloadAppUrl:        String
+		let logoImageUrl:          String
+		let logoImageAlt:          String
+		let backgroundRGB:         String
+		let accentRGB:             String
 		let mailBody:              String
 		let trialExpDays:          Int
 		let graceDays:             Int
@@ -186,7 +205,7 @@ public enum UMLicensing {
 			return nil
 		}
 
-		var license = remote
+		var license = remote.license
 		license.machId = c.machId
 		c.store.save (license)
 		c.store.lastServerCheck = Date ()
@@ -297,12 +316,16 @@ public enum UMLicensing {
 		UserDefaults.standard.set (signup.email,    forKey: "License.temp.email")
 
 		let body = TrialMailer.body (template: c.mailBody,
-									 username: signup.username,
-									 appId: c.appId,
-									 appName: c.appName,
-									 serialId: serialId,
-									 expDate: expDate,
-									 downloadAppUrl: c.downloadAppUrl)
+									 fields: TrialMailer.Fields (username: signup.username,
+																 appId: c.appId,
+																 appName: c.appName,
+																 serialId: serialId,
+																 expDate: expDate,
+																 downloadAppUrl: c.downloadAppUrl,
+																 logoImageUrl: c.logoImageUrl,
+																 logoImageAlt: c.logoImageAlt,
+																 backgroundRGB: c.backgroundRGB,
+																 accentRGB: c.accentRGB))
 
 		let sent = await TrialMailer ().send (to: signup.email,
 											  name: signup.username,
@@ -409,16 +432,21 @@ public enum UMLicensing {
 			}
 
 			// Il server è l'autorità sulla scadenza: un trial non si allunga
-			// riportando indietro l'orologio del Mac.
+			// riportando indietro l'orologio del Mac. Ma solo quando la data che manda
+			// è leggibile: se non lo è teniamo quella locale, perché dichiarare scaduta
+			// una licenza sulla base di un campo che non sappiamo interpretare
+			// significa bloccare fuori un cliente pagante.
 			var updated = license
-			updated.expDate = remote.expDate
-			if !remote.regDate.timeIntervalSince1970.isZero { updated.regDate = remote.regDate }
+			if let remoteExp = remote.expDate { updated.expDate = remoteExp }
+			if let remoteReg = remote.regDate { updated.regDate = remoteReg }
 
 			c.store.save (updated)
 			c.store.lastServerCheck = Date ()
 
-			if updated.isExpired {
-				return .rejected ("Your trial license has expired.")
+			// La scadenza vale solo per le licenze a termine, e solo se la data viene
+			// davvero dal server.
+			if remote.expDate != nil, updated.isExpired {
+				return .rejected ("Your \(updated.type.displayName) license has expired.")
 			}
 			return .ok (updated)
 

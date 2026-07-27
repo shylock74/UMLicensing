@@ -165,6 +165,56 @@ final class CompatTests: XCTestCase {
 	}
 
 
+	/// Regressione: una data del server in un formato non previsto veniva letta come
+	/// anno 0 — cioè una data nel passato — e faceva risultare scaduta una licenza
+	/// appena attivata. Ora una stringa illeggibile è `nil`, non una data finta.
+	func testUnreadableServerDateIsNilNotYearZero () {
+		for input in ["27/07/2026 10:15", "July 27, 2026", "", "   ", "abc",
+					  "0000-00-00", "null", "-", "20260727"] {
+			let parsed = Compat.du_parseServerDate (input)
+
+			if let parsed {
+				XCTAssertTrue (Compat.isPlausible (parsed),
+							   "\"\(input)\" interpretata come data implausibile: \(parsed)")
+			}
+		}
+	}
+
+
+	/// I formati che il backend può realisticamente restituire devono dare tutti
+	/// il 27 luglio 2026.
+	func testServerDateFormatsAreUnderstood () {
+		let expected = Compat.du_createDate (d: 27, m: 7, y: 2026)
+
+		for input in ["2026-07-27", "2026-07-27 10:15:00", "2026/07/27",
+					  "27/07/2026", "27-07-2026"] {
+			XCTAssertEqual (Compat.du_parseServerDate (input), expected,
+							"formato non riconosciuto: \"\(input)\"")
+		}
+	}
+
+
+	/// Il caso che produceva il bug: `Int("27/0") ?? 0` dava anno 0, cioè una data
+	/// remotissima nel passato, e la licenza risultava scaduta.
+	func testNonISODateIsNotReadAsYearZero () {
+		let date = Compat.du_createDateFormStandardString ("31/12/2030")
+
+		XCTAssertTrue (Compat.isPlausible (date))
+		XCTAssertGreaterThan (date, Date (), "una scadenza 2030 non può risultare già passata")
+	}
+
+
+	/// Una licenza a termine con scadenza futura non deve risultare scaduta solo
+	/// perché il server ha risposto in un formato inatteso.
+	func testTrialWithFutureRemoteDateIsNotExpired () {
+		var license = LicenseData ()
+		license.serialId = LicenseValidator.generateSN (appShortId: "PC20", type: .trial, progressiveN: 1)
+		license.expDate  = Compat.du_createDateFormStandardString ("31/12/2030")
+
+		XCTAssertFalse (license.isExpired)
+	}
+
+
 	func testDateStringRoundTrip () {
 		let date = Compat.du_createDate (d: 27, m: 7, y: 2026)
 		let s = Compat.du_getDateString (date)
@@ -417,6 +467,21 @@ final class EmailTests: XCTestCase {
 	}
 
 
+	private func makeFields (logoImageUrl: String = "https://ulti.media/logo.png",
+							 logoImageAlt: String = "") -> TrialMailer.Fields {
+		TrialMailer.Fields (username: "Alex",
+							appId: "com.ulti.test",
+							appName: "BeatMark X",
+							serialId: "PC20T-00000001-1234567",
+							expDate: Date (),
+							downloadAppUrl: "https://ulti.media/download",
+							logoImageUrl: logoImageUrl,
+							logoImageAlt: logoImageAlt,
+							backgroundRGB: "15, 23, 42",
+							accentRGB: "56, 189, 248")
+	}
+
+
 	func testTemplatePlaceholdersAreReplaced () {
 		let template = """
 			Ciao %%License.username%%, ecco il seriale per %%License.appName%%:
@@ -424,19 +489,136 @@ final class EmailTests: XCTestCase {
 			Download: %%License.downloadAppUrl%%
 			"""
 
-		let body = TrialMailer.body (template: template,
-									 username: "Alex",
-									 appId: "com.ulti.test",
-									 appName: "BeatMark X",
-									 serialId: "PC20T-00000001-1234567",
-									 expDate: Date (),
-									 downloadAppUrl: "https://ulti.media/download")
+		let body = TrialMailer.body (template: template, fields: makeFields ())
 
 		XCTAssertFalse (body.contains ("%%"))
 		XCTAssertTrue (body.contains ("Alex"))
 		XCTAssertTrue (body.contains ("BeatMark X"))
 		XCTAssertTrue (body.contains ("PC20T-00000001-1234567"))
 		XCTAssertTrue (body.contains ("https://ulti.media/download"))
+	}
+
+
+	/// Il template incluso nel package dev'essere caricabile e non vuoto: se la
+	/// dichiarazione della risorsa in Package.swift salta, l'email parte vuota.
+	func testDefaultTemplateIsBundled () {
+		let template = TrialMailer.defaultTemplate ()
+
+		XCTAssertFalse (template.isEmpty, "MailTemplate.txt non trovato in Bundle.module")
+		XCTAssertTrue (template.contains ("%%License.serialId%%"))
+	}
+
+
+	/// Il test che conta: sul template vero non deve restare NESSUN `%%…%%`.
+	/// Se aggiungi un placeholder al template e ti dimentichi di gestirlo qui,
+	/// questo test fallisce prima che l'email parta rotta.
+	func testRealTemplateHasNoLeftoverPlaceholders () {
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields ())
+
+		XCTAssertFalse (body.contains ("%%"), "placeholder non sostituiti: \(leftovers (in: body))")
+	}
+
+
+	func testRealTemplateContainsAllValues () {
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields ())
+
+		XCTAssertTrue (body.contains ("Alex"))
+		XCTAssertTrue (body.contains ("BeatMark X"))
+		XCTAssertTrue (body.contains ("PC20T-00000001-1234567"))
+		XCTAssertTrue (body.contains ("https://ulti.media/download"))
+		XCTAssertTrue (body.contains ("https://ulti.media/logo.png"))
+		XCTAssertTrue (body.contains ("rgb(15, 23, 42)"))
+		XCTAssertTrue (body.contains ("rgb(56, 189, 248)"))
+		XCTAssertTrue (body.contains ("rgba(56, 189, 248, 0.7)"))
+	}
+
+
+	/// Senza logo il blocco `<img>` sparisce, invece di lasciare un `src=""` che i
+	/// client email disegnano come icona rotta.
+	func testEmptyLogoRemovesTheImageBlock () {
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields (logoImageUrl: ""))
+
+		XCTAssertFalse (body.contains ("%%"))
+		XCTAssertFalse (body.contains ("src=\"\""))
+		XCTAssertFalse (body.contains ("LogoImageAlt"))
+		// Il logo Ulti.Media nel footer non c'entra e deve restare.
+		XCTAssertTrue (body.contains ("ultimedia_logo.anim.gif"))
+	}
+
+
+	func testLogoAltFallsBackToAppName () {
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields (logoImageAlt: ""))
+
+		XCTAssertTrue (body.contains ("alt=\"BeatMark X\""))
+	}
+
+
+	func testLogoAltIsUsedWhenGiven () {
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields (logoImageAlt: "BeatMark logo"))
+
+		XCTAssertTrue (body.contains ("alt=\"BeatMark logo\""))
+	}
+
+
+	func testCurrentYear () {
+		let date = Compat.du_createDate (d: 27, m: 7, y: 2026)
+
+		XCTAssertEqual (TrialMailer.currentYear (date: date), "2026")
+	}
+
+
+	func testCurrentBuildCombinesVersionAndBuild () {
+		// Bundle.main durante i test è il runner, quindi verifico solo che produca
+		// qualcosa di sensato invece di una stringa vuota nell'email.
+		let build = TrialMailer.currentBuild ()
+
+		XCTAssertFalse (build.isEmpty)
+		XCTAssertFalse (build.contains ("%%"))
+	}
+
+
+	@MainActor
+	func testRGBComponents () {
+		XCTAssertEqual (TrialMailer.rgbComponents (.umLicensingMailBackground), "15, 23, 42")
+		XCTAssertEqual (TrialMailer.rgbComponents (.umLicensingMailAccent), "56, 189, 248")
+		XCTAssertEqual (TrialMailer.rgbComponents (NSColor (srgbRed: 1, green: 0, blue: 0, alpha: 1)), "255, 0, 0")
+	}
+
+
+	/// Un colore preso dagli Assets può essere in un color space diverso o dinamico:
+	/// senza `usingColorSpace(.sRGB)` leggere `redComponent` va in crash.
+	@MainActor
+	func testRGBComponentsHandlesNonSRGBColors () {
+		XCTAssertEqual (TrialMailer.rgbComponents (.white), "255, 255, 255")
+		XCTAssertEqual (TrialMailer.rgbComponents (.black), "0, 0, 0")
+		XCTAssertFalse (TrialMailer.rgbComponents (.controlAccentColor).isEmpty)
+	}
+
+
+	/// Scrive l'email renderizzata su file, per guardarla in un browser.
+	/// Non è una verifica: `UMLICENSING_PREVIEW=/percorso/mail.html swift test`.
+	func testWritePreviewUtility () throws {
+		let path = ProcessInfo.processInfo.environment ["UMLICENSING_PREVIEW"] ?? ""
+		try XCTSkipIf (path.isEmpty, "utility: eseguire con UMLICENSING_PREVIEW=/percorso/mail.html")
+
+		let body = TrialMailer.body (template: TrialMailer.defaultTemplate (),
+									 fields: makeFields ())
+		try body.write (toFile: path, atomically: true, encoding: .utf8)
+		print ("preview scritta in \(path)")
+	}
+
+
+	private func leftovers (in body: String) -> [String] {
+		guard let regex = try? NSRegularExpression (pattern: "%%[^%]+%%") else { return [] }
+		let range = NSRange (body.startIndex ..< body.endIndex, in: body)
+		return regex.matches (in: body, range: range).compactMap {
+			Range ($0.range, in: body).map { String (body [$0]) }
+		}
 	}
 
 

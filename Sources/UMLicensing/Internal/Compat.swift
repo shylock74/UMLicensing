@@ -201,11 +201,67 @@ enum Compat {
 
 
 	/// Interpreta una data ricevuta dal server (`yyyy-MM-dd`, con o senza orario).
+	///
+	/// Conserva la firma non opzionale dell'originale, ma per decidere se una licenza
+	/// è scaduta usa `du_parseServerDate`: qui una stringa illeggibile diventa l'anno 0,
+	/// cioè una data nel passato, e farebbe risultare scaduta qualunque licenza.
 	static func du_createDateFormStandardString (_ s: String) -> Date {
-		let y = Int (strUt_getSubString (srcString: s, startAt: 0, endAt: 4)) ?? 0
-		let m = Int (strUt_getSubString (srcString: s, startAt: 5, endAt: 7)) ?? 1
-		let d = Int (strUt_getSubString (srcString: s, startAt: 8, endAt: 10)) ?? 1
-		return du_createDate (d: d, m: m, y: y)
+		du_parseServerDate (s) ?? du_createDate (d: 1, m: 1, y: 2100)
+	}
+
+
+	/// Interpreta una data del server, `nil` se il formato non è riconoscibile.
+	///
+	/// L'originale leggeva a offset fissi assumendo `yyyy-MM-dd`: qualunque altro
+	/// formato produceva `Int("27/0") ?? 0`, cioè anno 0. Una licenza appena attivata
+	/// risultava così immediatamente scaduta. Distinguere "data assente", "data
+	/// illeggibile" e "data valida" è ciò che evita quel fallimento silenzioso.
+	static func du_parseServerDate (_ s: String) -> Date? {
+		let trimmed = s.trimmingCharacters (in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return nil }
+
+		// Percorso nativo: `yyyy-MM-dd` eventualmente seguito da un orario.
+		if let date = parseISOStyle (trimmed) { return date }
+
+		// Formati alternativi visti in giro sui backend classic ASP/PHP a seconda
+		// della locale del server.
+		for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd", "yyyy/MM/dd",
+					   "dd-MM-yyyy", "dd/MM/yyyy", "MM/dd/yyyy",
+					   "M/d/yyyy", "d/M/yyyy"] {
+			let df = DateFormatter ()
+			df.locale = Locale (identifier: "en_US_POSIX")
+			df.calendar = calendar
+			df.dateFormat = format
+			if let date = df.date (from: trimmed), isPlausible (date) {
+				return date
+			}
+		}
+		return nil
+	}
+
+
+	private static func parseISOStyle (_ s: String) -> Date? {
+		let y = Int (strUt_getSubString (srcString: s, startAt: 0, endAt: 4))
+		let m = Int (strUt_getSubString (srcString: s, startAt: 5, endAt: 7))
+		let d = Int (strUt_getSubString (srcString: s, startAt: 8, endAt: 10))
+
+		guard let y, let m, let d,
+			  strUt_getChar (s: s, n: 4) == "-",
+			  (1 ... 12).contains (m),
+			  (1 ... 31).contains (d) else {
+			return nil
+		}
+
+		let date = du_createDate (d: d, m: m, y: y)
+		return isPlausible (date) ? date : nil
+	}
+
+
+	/// Filtro di sanità: una data di licenza sta fra il 2000 e il 2200. Fuori da lì
+	/// è quasi certamente il risultato di un parsing andato storto.
+	static func isPlausible (_ date: Date) -> Bool {
+		let year = calendar.component (.year, from: date)
+		return (2000 ... 2200).contains (year)
 	}
 
 
