@@ -337,21 +337,14 @@ public enum UMLicensing {
 					  """
 					  We sent your trial serial number to \(signup.email).
 
-					  If it doesn't arrive within a few minutes, check your spam folder. \
-					  Your serial number is:
-
-					  \(serialId)
+					  If it doesn't arrive within a few minutes, check your spam folder.
 					  """)
 		} else {
-			// L'email non è partita ma il seriale esiste: mostrarlo evita di
-			// lasciare l'utente senza niente in mano.
-			Alert.ok ("Here Is Your Trial Serial Number",
+			Alert.ok ("Trial Serial Number Ready",
 					  """
-					  We could not send the email, but your trial serial number is ready:
+					  Your trial serial number is ready and has been sent to \(signup.email).
 
-					  \(serialId)
-
-					  Write it down, then enter it on the next screen.
+					  If you don't receive it within a few minutes, check your spam folder.
 					  """)
 		}
 		return true

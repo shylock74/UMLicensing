@@ -152,6 +152,10 @@ final class CompatTests: XCTestCase {
 		let data = Compat.encapsulateGetValue (srcText: response, label: "data")
 		XCTAssertEqual (Compat.encapsulateGetValue (srcText: data, label: "serialId"), "PC20F-00000001-1234567")
 		XCTAssertEqual (Compat.encapsulateGetValue (srcText: response, label: "assente"), "")
+
+		let errResponse = "<errorCode>1</errorCode><errorMessage>Invalid S/N</errorMessage>"
+		XCTAssertEqual (Compat.encapsulateGetValue (srcText: errResponse, label: "errorCode"), "1")
+		XCTAssertEqual (Compat.encapsulateGetValue (srcText: errResponse, label: "errorMessage"), "Invalid S/N")
 	}
 
 

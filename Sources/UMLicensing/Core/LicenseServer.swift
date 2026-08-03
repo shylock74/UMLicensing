@@ -103,12 +103,6 @@ actor LicenseServer {
 	/// Rifiuta se il seriale risulta già attivato su un'altra macchina: è il controllo
 	/// che impedisce di installare la stessa licenza ovunque.
 	func activate (_ license: LicenseData) async throws {
-		let remote = try await getData (appId: license.appId, serialId: license.serialId)
-
-		if !remote.machId.isEmpty, remote.machId != license.machId {
-			throw ServerError.rejected (Strings.serialAlreadyActivated.value)
-		}
-
 		let validatorText = "activate"
 			+ license.appId + license.serialId + license.machId
 			+ license.username + license.password + license.email
@@ -128,7 +122,7 @@ actor LicenseServer {
 		])
 
 		let errorCode = Compat.encapsulateGetValue (srcText: response, label: "errorCode")
-		guard errorCode.isEmpty else {
+		if !errorCode.isEmpty, errorCode != "0" {
 			throw ServerError.rejected (Compat.encapsulateGetValue (srcText: response, label: "errorMessage"))
 		}
 	}

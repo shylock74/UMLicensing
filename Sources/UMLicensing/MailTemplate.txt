@@ -10,7 +10,7 @@
   </div>
   
   <h1 style="margin: 6px 0 18px; font-size: 24px; line-height: 1.3; text-align: center; color: #f9fafb; font-weight: 600;">
-    Hi <strong>%%License.username%%</strong>, here&apos;s your <span style="color: rgb(%%ACCENT_RGB%%);">%%APPNAME%%</span> trial license
+    Hi <strong>%%License.username%%</strong>,<br />here&apos;s your <span style="color: rgb(%%ACCENT_RGB%%);">%%APPNAME%%</span> trial license
   </h1>
 
   <p style="font-size: 15px; line-height: 1.7; color: #d1d5db; margin: 0 0 18px;">
