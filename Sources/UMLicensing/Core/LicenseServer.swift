@@ -123,7 +123,38 @@ actor LicenseServer {
 
 		let errorCode = Compat.encapsulateGetValue (srcText: response, label: "errorCode")
 		if !errorCode.isEmpty, errorCode != "0" {
-			throw ServerError.rejected (Compat.encapsulateGetValue (srcText: response, label: "errorMessage"))
+			let errorMessage = Compat.encapsulateGetValue (srcText: response, label: "errorMessage")
+
+			let lowerMsg = errorMessage.lowercased ()
+			if lowerMsg.contains ("doesn't exist") || lowerMsg.contains ("does not exist") || lowerMsg.contains ("doesn't exists") {
+				try? await uploadNewLicense (appId: license.appId,
+											serialId: license.serialId,
+											expDate: license.expDate,
+											machId: license.machId,
+											username: license.username,
+											email: license.email)
+
+				let retryResponse = try await get ([
+					("action",    "activate"),
+					("appId",     license.appId),
+					("serialId",  license.serialId),
+					("machId",    license.machId),
+					("username",  license.username),
+					("password",  license.password),
+					("email",     license.email),
+					("expDate",   Compat.du_getDateString (license.expDate)),
+					("validator", LicenseValidator.hash (validatorText)),
+				])
+
+				let retryErrCode = Compat.encapsulateGetValue (srcText: retryResponse, label: "errorCode")
+				if !retryErrCode.isEmpty, retryErrCode != "0" {
+					let retryMsg = Compat.encapsulateGetValue (srcText: retryResponse, label: "errorMessage")
+					throw ServerError.rejected (retryMsg.isEmpty ? errorMessage : retryMsg)
+				}
+				return
+			}
+
+			throw ServerError.rejected (errorMessage)
 		}
 	}
 

@@ -186,12 +186,21 @@ public enum UMLicensing {
 					return true
 
 				case .rejected (let message):
-					Alert.ok ("License", message.isEmpty ? Strings.invalidLicense.value : message)
+					Alert.ok ("License", formatServerMessage (message))
 					c.store.clear ()
 					UMLicenseValidationCode.clear ()
 					license = LicenseData ()
 			}
 		}
+	}
+
+
+	private static func formatServerMessage (_ message: String) -> String {
+		let lower = message.lowercased ()
+		if lower.contains ("doesn't exist") || lower.contains ("does not exist") || lower.contains ("invalid s/n") {
+			return "\(Strings.invalidSN.value).\n\(Strings.checkIfYouTypedCorrectly.value)."
+		}
+		return message.isEmpty ? Strings.invalidLicense.value : message
 	}
 
 
@@ -385,7 +394,7 @@ public enum UMLicensing {
 					  """)
 			return nil
 		} catch let LicenseServer.ServerError.rejected (message) {
-			Alert.ok ("License", message.isEmpty ? Strings.invalidLicense.value : message)
+			Alert.ok ("License", formatServerMessage (message))
 			return nil
 		} catch {
 			Alert.ok ("License", Strings.notValidated.value)
