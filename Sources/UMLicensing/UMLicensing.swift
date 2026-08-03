@@ -167,7 +167,7 @@ public enum UMLicensing {
 			switch await confirm (license, c) {
 				case .ok (let confirmed):
 					markValidated (confirmed, c)
-					announceTrialExpiry (confirmed)
+					announceActivation (confirmed, appName: c.appName)
 					return true
 
 				case .offline (let tolerated):
@@ -521,10 +521,14 @@ public enum UMLicensing {
 	}
 
 
-	private static func announceTrialExpiry (_ license: LicenseData) {
-		guard license.type == .trial else { return }
-		Alert.ok ("License",
-				  Strings.trialLicenseExpires.value
-					+ Compat.du_formatDate (license.expDate, formatter: "dd MMMM yyyy"))
+	private static func announceActivation (_ license: LicenseData, appName: String) {
+		if license.type == .trial {
+			let dateStr = Compat.du_formatDate (license.expDate, formatter: "dd MMMM yyyy")
+			Alert.ok ("Trial License Activated",
+					  "Thank you! Your trial license for \(appName) has been successfully activated and is valid until \(dateStr).")
+		} else {
+			Alert.ok ("License Activated",
+					  "Thank you! Your serial number is correct. \(appName) is now unlocked and fully registered.")
+		}
 	}
 }
