@@ -90,13 +90,30 @@ enum LicenseValidator {
 	}
 
 
+	/// La firma che producevano le prime versioni di questo package, quando
+	/// `du_getDateString` restituiva `yyyy-MM-dd` invece del `dd/MM/yyyy` originale.
+	///
+	/// Serve solo a `LicenseStore.load()` per riconoscere — e riscrivere — le licenze
+	/// salvate da quelle build, invece di dichiararle manomesse.
+	static func isoValidator (for d: LicenseData) -> String {
+		hash (d.appId + d.serialId + d.machId + d.username + d.password + d.serialId
+			  + Compat.du_getDateStringISO (d.regDate)
+			  + Compat.du_getDateStringISO (d.expDate)
+			  + d.licType)
+	}
+
+
 	// MARK: - Unlock
 
 	/// Codice che l'utente detta al supporto per sbloccare un seriale rimasto legato
 	/// a una macchina che non ha più.
+	///
+	/// Niente md5: l'originale estrae le cifre direttamente dalla concatenazione. Il
+	/// tool del supporto (SNGenerator) calcola così, quindi passare dall'hash
+	/// produrrebbe codici che non combaciano con quelli dettati al cliente.
 	static func unlockCode (for d: LicenseData) -> String {
 		let s = d.appId + d.serialId + d.machId + Strings.unlockSuffix.value
-		return Compat.racId_getNumbersToLength (s: Compat.racId_md5 (s), l: 10)
+		return Compat.racId_getNumbersToLength (s: s, l: 10)
 	}
 
 

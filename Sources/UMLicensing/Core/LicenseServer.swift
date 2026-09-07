@@ -14,10 +14,10 @@ actor LicenseServer {
 
 	/// URL del backend, offuscato per non comparire in `strings`.
 	///
-	/// ⚠️ Qui c'è `https://alexraccuglia.net/license/license.asp`, l'unico endpoint che
-	/// compare in chiaro nel vecchio codice (`releaseSerialFast`, `getSNStatus`).
-	/// Il `serverUrl` offuscato con Splhash potrebbe puntare altrove — confermamelo.
-	private static let defaultUrl = Obfuscated ([0x32, 0xB7, 0x6B, 0x07, 0xC1, 0x32, 0xCB, 0x16, 0x0C, 0xFD, 0x29, 0xD8, 0x28, 0xA2, 0x7C, 0x14, 0xC7, 0x6F, 0x88, 0x50, 0x0C, 0xBF, 0x22, 0xC5, 0x2E, 0xEC, 0x73, 0x1E, 0xD1, 0x6D, 0x8A, 0x4A, 0x08, 0xBE, 0x20, 0xC9, 0x39, 0xA6, 0x71, 0x04, 0xD7, 0x26, 0x85, 0x4A, 0x1D])
+	/// È `https://www.alexraccuglia.net/license/license.asp`, cioè il `License.serverUrl`
+	/// del vecchio codice una volta passato da `Splhash.getPlain`. Il `www.` conta: senza
+	/// non è detto che il redirect conservi la query string.
+	private static let defaultUrl = Obfuscated ([0x32, 0xB7, 0x6B, 0x07, 0xC1, 0x32, 0xCB, 0x16, 0x1A, 0xE6, 0x3B, 0x8E, 0x3B, 0xAF, 0x7A, 0x0F, 0xC0, 0x69, 0x87, 0x5A, 0x18, 0xF6, 0x20, 0xC9, 0x3B, 0xED, 0x71, 0x12, 0xC6, 0x27, 0x88, 0x50, 0x0E, 0xF4, 0x22, 0xD3, 0x3F, 0xEC, 0x73, 0x1E, 0xD1, 0x6D, 0x8A, 0x4A, 0x08, 0xBF, 0x2D, 0xD3, 0x2A])
 
 	private let baseUrl: String
 	private let session: URLSession
@@ -270,12 +270,16 @@ actor LicenseServer {
 	// MARK: - Trasporto
 
 	private func get (_ params: [(String, String)]) async throws -> String {
-		guard var components = URLComponents (string: baseUrl) else {
+		// Query costruita a mano, come `netU_getGetUrl`: `URLComponents` lascia in
+		// chiaro il `+`, che il server rilegge come spazio. Una email tipo
+		// `nome+tag@x.com` arriverebbe diversa da quella su cui è calcolato il validator.
+		let query = params
+			.map { "\($0.0)=\(Compat.netU_percEnc ($0.1))" }
+			.joined (separator: "&")
+
+		guard let url = URL (string: baseUrl + "?" + query) else {
 			throw ServerError.unreachable
 		}
-		components.queryItems = params.map { URLQueryItem (name: $0.0, value: $0.1) }
-
-		guard let url = components.url else { throw ServerError.unreachable }
 
 		Diagnostics.log ("GET \(params.first?.1 ?? "?") -> \(url.absoluteString)")
 

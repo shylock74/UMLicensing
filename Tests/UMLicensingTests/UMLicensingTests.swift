@@ -119,10 +119,16 @@ final class CompatTests: XCTestCase {
 	}
 
 
-	func testGetNumbersToLengthAlwaysReturnsRequestedLength () {
+	func testGetNumbersToLength () {
 		XCTAssertEqual (Compat.racId_getNumbersToLength (s: "a1b2c3d4e5f6", l: 4), "1234")
-		XCTAssertEqual (Compat.racId_getNumbersToLength (s: "abcdef", l: 4).count, 4)
 		XCTAssertEqual (Compat.racId_getNumbersToLength (s: Compat.racId_md5 ("PC20F-00000001"), l: 7).count, 7)
+
+		// Poche cifre: l'originale ricicla le stesse finché non arriva a lunghezza.
+		XCTAssertEqual (Compat.racId_getNumbersToLength (s: "a1b2", l: 5), "12121")
+
+		// Nessuna cifra: stringa vuota, non una stringa di zeri.
+		XCTAssertEqual (Compat.racId_getNumbersToLength (s: "abcdef", l: 4), "")
+		XCTAssertEqual (Compat.racId_getNumbersToLength (s: "", l: 4), "")
 	}
 
 
@@ -219,12 +225,64 @@ final class CompatTests: XCTestCase {
 	}
 
 
-	func testDateStringRoundTrip () {
+	/// Il formato che entra nei validator. Se questo test cambia, cambia anche la
+	/// firma di ogni licenza già emessa: non "aggiustarlo", è il contratto col vecchio
+	/// `du_getDateString`.
+	func testDateStringIsLegacyDayFirstFormat () {
 		let date = Compat.du_createDate (d: 27, m: 7, y: 2026)
-		let s = Compat.du_getDateString (date)
 
-		XCTAssertTrue (s.hasPrefix ("2026-07-27"), "formato inatteso: \(s)")
-		XCTAssertEqual (Compat.du_createDateFormStandardString (s), date)
+		XCTAssertEqual (Compat.du_getDateString (date), "27/07/2026")
+		XCTAssertEqual (Compat.du_createDateFormStandardString (Compat.du_getDateString (date)), date)
+	}
+
+
+	/// L'unlock code dettato al supporto non passa da md5: le cifre escono direttamente
+	/// dalla concatenazione, come in `License.getUnlockCode()`.
+	func testUnlockCodeMatchesLegacyFormula () {
+		var license = LicenseData ()
+		license.appId    = "FCP SRT Importer 2"
+		license.serialId = "SI20F-00000123-1234567"
+		license.machId   = "aa:bb:cc:dd:ee:ff"
+
+		let expected = Compat.racId_getNumbersToLength (s: license.appId + license.serialId
+													   + license.machId + "53r141",
+													   l: 10)
+		XCTAssertEqual (LicenseValidator.unlockCode (for: license), expected)
+		XCTAssertEqual (LicenseValidator.unlockCode (for: license).count, 10)
+	}
+
+
+	/// Una licenza salvata da una build che firmava in `yyyy-MM-dd` deve essere
+	/// riconosciuta e riscritta con la firma legacy, non dichiarata manomessa.
+	func testIsoSignedLicenseIsMigratedNotRejected () {
+		let defaults = UserDefaults (suiteName: "UMLicensingTests.isoMigration")!
+		defaults.removePersistentDomain (forName: "UMLicensingTests.isoMigration")
+
+		var license = LicenseData ()
+		license.appId    = "FCP SRT Importer 2"
+		license.serialId = LicenseValidator.generateSN (appShortId: "SI20", type: .full, progressiveN: 123)
+		license.machId   = "aa:bb:cc:dd:ee:ff"
+		license.username = "Alex"
+		license.password = "PASSWORD"
+		license.email    = "alex@example.com"
+		license.regDate  = Compat.du_createDate (d: 1, m: 3, y: 2024)
+		license.expDate  = Compat.du_createDate (d: 1, m: 1, y: 2100)
+		license.licType  = "full"
+
+		let store = LicenseStore (appId: license.appId, defaults: defaults)
+		store.save (license)
+		// Sovrascriviamo la firma con quella sbagliata delle prime build.
+		defaults.set (LicenseValidator.isoValidator (for: license), forKey: "license..validator")
+
+		let loaded = store.load ()
+		XCTAssertEqual (loaded.serialId, license.serialId, "la licenza non deve essere scartata")
+		XCTAssertTrue (loaded.errorMessage.isEmpty)
+
+		// E la firma sui preferences ora è quella legacy.
+		XCTAssertEqual (defaults.string (forKey: "license..validator"),
+						LicenseValidator.validator (for: license))
+
+		defaults.removePersistentDomain (forName: "UMLicensingTests.isoMigration")
 	}
 }
 

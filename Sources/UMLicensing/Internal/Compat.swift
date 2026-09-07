@@ -8,7 +8,10 @@
 //  una singola differenza (maiuscole, padding, formato data) invalida le licenze
 //  già emesse e fa rifiutare le richieste dal server.
 //
-//  ⚠️ = ipotesi da verificare contro il sorgente originale di UMOmniaFramework.
+//  Tutte le funzioni qui dentro sono state riscontrate sui sorgenti originali
+//  (`UMOmniaFramework/License/license.swift`, `UMFoundation/.../stringUtils.swift`,
+//  `dateUtils.swift`, `netUtils.swift`, `encapsulate.swift`): dove il commento cita
+//  l'originale, è perché il comportamento è stato copiato da lì e non va "migliorato".
 //
 
 import Foundation
@@ -20,11 +23,10 @@ enum Compat {
 
 	// MARK: - Hash
 
-	/// MD5 in esadecimale.
+	/// MD5 in esadecimale minuscolo, senza separatori.
 	///
-	/// ⚠️ Assumo hex **minuscolo** senza separatori: è l'output di `CC_MD5` formattato
-	/// con `%02x`, la convenzione più comune. Se `racId_md5` usa `%02X` (maiuscolo)
-	/// ogni validator cambia e nessuna licenza esistente passa più.
+	/// L'originale usa `CC_MD5` e formatta ogni byte con `%02x`: qui cambia solo
+	/// l'implementazione, non l'output.
 	static func racId_md5 (_ s: String) -> String {
 		let digest = Insecure.MD5.hash (data: Data (s.utf8))
 		return digest.map { String (format: "%02x", $0) }.joined ()
@@ -34,18 +36,16 @@ enum Compat {
 	/// Estrae le sole cifre da `s` finché non raggiunge lunghezza `l`.
 	///
 	/// Usata per generare il validator numerico a 7 cifre dei seriali e l'unlock code
-	/// a 10 cifre. Un hash MD5 (32 hex) contiene in media ~12 cifre, quindi per `l = 10`
-	/// bastano quasi sempre; per sicurezza, se le cifre finiscono prima, l'originale
-	/// deve pur fare qualcosa.
+	/// a 10 cifre. Se le cifre non bastano l'originale si richiama ricorsivamente su
+	/// `s`, cioè riparte dalle stesse cifre: qui il ciclo fa la stessa cosa.
 	///
-	/// ⚠️ Il fallback quando le cifre non bastano è la mia ipotesi (riparte dall'inizio
-	/// dell'hash finché non completa). L'alternativa plausibile è il padding con "0".
+	/// Se in `s` non c'è nemmeno una cifra l'originale restituisce stringa vuota, non
+	/// una stringa di zeri: il chiamante deve poter distinguere i due casi.
 	static func racId_getNumbersToLength (s: String, l: Int) -> String {
+		guard !s.isEmpty, l > 0 else { return "" }
+
 		let digits = s.filter { $0.isNumber }
-		guard digits.count < l else {
-			return String (digits.prefix (l))
-		}
-		guard !digits.isEmpty else { return String (repeating: "0", count: l) }
+		guard !digits.isEmpty else { return "" }
 
 		var result = digits
 		while result.count < l {
@@ -158,10 +158,7 @@ enum Compat {
 
 	/// Estrae il valore di un campo dalla risposta del server.
 	///
-	/// ⚠️ Assumo il formato `<label>valore</label>`. Se il server usa un delimitatore
-	/// diverso (`[label]...[/label]`, `label={...}`, ecc.) va corretto qui: da questa
-	/// funzione dipendono `errorCode`, `data`, `validator`, `released`, quindi
-	/// sbagliarla significa che ogni attivazione fallisce silenziosamente.
+	/// Il formato è `<label>valore</label>`, come in `encapsulateLabelStart/End`.
 	static func encapsulateGetValue (srcText: String, label: String) -> String {
 		strUt_getInnerText (srcText: srcText,
 							prevText: "<\(label)>",
@@ -171,15 +168,26 @@ enum Compat {
 
 	// MARK: - Date
 
-	/// Data in formato server.
+	/// Data in formato server: `dd/MM/yyyy`, senza orario.
 	///
-	/// ⚠️ `LicenseRemoteData.getDateFromServerString` legge anno da `[0,4)`, mese da
-	/// `[5,7)`, giorno da `[8,10)`, quindi il prefisso è certo: `yyyy-MM-dd`. Resta da
-	/// confermare se `du_getDateString` accoda anche l'orario (`HH:mm:ss`) — il server
-	/// riceve questa stringa in `expDate`, e nel validator di `activate` ci finisce
-	/// dentro, quindi la differenza conta.
+	/// È il formato dell'originale (`dateUtils.du_getDateString`) e non è negoziabile:
+	/// entra nel validator della copia locale della licenza e in quello di `activate`,
+	/// quindi un formato diverso rende illeggibili tutte le licenze già emesse e fa
+	/// rifiutare le attivazioni dal server.
+	///
+	/// Da non confondere con `LicenseRemoteData.getDateFromServerString`, che legge
+	/// `yyyy-MM-dd`: quella è l'API di amministrazione, non è questo percorso.
 	static func du_getDateString (_ date: Date) -> String {
-		serverDateFormatter.string (from: date)
+		legacyDateFormatter.string (from: date)
+	}
+
+
+	/// La stessa data in `yyyy-MM-dd`.
+	///
+	/// Serve solo a riconoscere le licenze firmate dalle prime versioni di questo
+	/// package, che usavano per errore il formato ISO. Vedi `LicenseStore.load()`.
+	static func du_getDateStringISO (_ date: Date) -> String {
+		isoDateFormatter.string (from: date)
 	}
 
 
@@ -200,7 +208,7 @@ enum Compat {
 	}
 
 
-	/// Interpreta una data ricevuta dal server (`yyyy-MM-dd`, con o senza orario).
+	/// Interpreta una data ricevuta dal server (`dd/MM/yyyy`).
 	///
 	/// Conserva la firma non opzionale dell'originale, ma per decidere se una licenza
 	/// è scaduta usa `du_parseServerDate`: qui una stringa illeggibile diventa l'anno 0,
@@ -212,20 +220,25 @@ enum Compat {
 
 	/// Interpreta una data del server, `nil` se il formato non è riconoscibile.
 	///
-	/// L'originale leggeva a offset fissi assumendo `yyyy-MM-dd`: qualunque altro
-	/// formato produceva `Int("27/0") ?? 0`, cioè anno 0. Una licenza appena attivata
-	/// risultava così immediatamente scaduta. Distinguere "data assente", "data
+	/// L'originale leggeva a offset fissi e su una stringa fuori formato faceva
+	/// `Int(...)!`, cioè crash, oppure anno 0 — una data remota nel passato, con la
+	/// licenza appena attivata già scaduta. Distinguere "data assente", "data
 	/// illeggibile" e "data valida" è ciò che evita quel fallimento silenzioso.
 	static func du_parseServerDate (_ s: String) -> Date? {
 		let trimmed = s.trimmingCharacters (in: .whitespacesAndNewlines)
 		guard !trimmed.isEmpty else { return nil }
 
-		// Percorso nativo: `yyyy-MM-dd` eventualmente seguito da un orario.
+		// Percorso nativo, quello di `du_createDateFormStandardString`: giorno in
+		// `[0,2)`, mese in `[3,5)`, anno nelle ultime 4 cifre, cioè `dd/MM/yyyy`.
+		if let date = parseLegacyStyle (trimmed) { return date }
+
+		// Il backend di amministrazione risponde invece in `yyyy-MM-dd`.
 		if let date = parseISOStyle (trimmed) { return date }
 
 		// Formati alternativi visti in giro sui backend classic ASP/PHP a seconda
 		// della locale del server.
-		for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd", "yyyy/MM/dd",
+		for format in ["dd/MM/yyyy HH:mm:ss", "dd/MM/yyyy HH:mm",
+					   "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd", "yyyy/MM/dd",
 					   "dd-MM-yyyy", "dd/MM/yyyy", "MM/dd/yyyy",
 					   "M/d/yyyy", "d/M/yyyy"] {
 			let df = DateFormatter ()
@@ -237,6 +250,22 @@ enum Compat {
 			}
 		}
 		return nil
+	}
+
+
+	/// `dd/MM/yyyy` letto agli offset fissi dell'originale, così accetta anche i
+	/// separatori diversi dalla barra (`27-07-2026`, `27.07.2026`) esattamente come lui.
+	private static func parseLegacyStyle (_ s: String) -> Date? {
+		guard let d = Int (strUt_getLeft (s, n: 2)),
+			  let m = Int (strUt_getSubString (srcString: s, startAt: 3, endAt: 5)),
+			  let y = Int (strUt_getRight (s, n: 4)),
+			  (1 ... 31).contains (d),
+			  (1 ... 12).contains (m) else {
+			return nil
+		}
+
+		let date = du_createDate (d: d, m: m, y: y)
+		return isPlausible (date) ? date : nil
 	}
 
 
@@ -285,10 +314,20 @@ enum Compat {
 	} ()
 
 
-	private static let serverDateFormatter: DateFormatter = {
+	/// Il formato dell'originale. Non cambiarlo: vedi `du_getDateString`.
+	private static let legacyDateFormatter: DateFormatter = {
 		let df = DateFormatter ()
 		df.locale = Locale (identifier: "en_US_POSIX")
-		df.dateFormat = "yyyy-MM-dd"      // ⚠️ verificare se serve " HH:mm:ss"
+		df.dateFormat = "dd/MM/yyyy"
+		return df
+	} ()
+
+
+	/// Usato solo per riconoscere le firme sbagliate delle prime versioni del package.
+	private static let isoDateFormatter: DateFormatter = {
+		let df = DateFormatter ()
+		df.locale = Locale (identifier: "en_US_POSIX")
+		df.dateFormat = "yyyy-MM-dd"
 		return df
 	} ()
 
@@ -296,18 +335,28 @@ enum Compat {
 	// MARK: - Rete
 
 	/// Percent-encoding dei parametri in query string.
+	///
+	/// L'originale partiva da `.urlHostAllowed`, che lascia passare in chiaro `&` e `=`:
+	/// un valore che li contenesse spezzava la query. Qui il set è ristretto, così il
+	/// server riceve comunque il valore esatto una volta decodificato.
+	///
+	/// Il `+` va codificato a mano: percent-encoding lo considera già valido, ma chi
+	/// legge la query lo interpreta come uno spazio — ed è il motivo per cui una email
+	/// come `nome+tag@x.com` arrivava mutilata.
 	static func netU_percEnc (_ s: String) -> String {
-		s.addingPercentEncoding (withAllowedCharacters: .alphanumerics) ?? s
+		let allowed = CharacterSet (charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+									+ "abcdefghijklmnopqrstuvwxyz"
+									+ "0123456789-._~")
+		return s.addingPercentEncoding (withAllowedCharacters: allowed) ?? s
 	}
 
 
-	/// MAC address dell'interfaccia di rete primaria, usato come `machId`.
+	/// MAC address dell'interfaccia di rete primaria, usato come `machId`:
+	/// `aa:bb:cc:dd:ee:ff`, esadecimale minuscolo, come `netU_getMacAddress()`.
 	///
-	/// ⚠️ Questo è il punto più delicato del port: `machId` identifica la macchina
-	/// sul server. Se il formato differisce da quello di `netU_getMacAddress()`
-	/// (maiuscolo/minuscolo, separatore `:` o `-`, presenza dei due punti) ogni utente
-	/// già attivato risulta su una macchina diversa e si vede rifiutare la licenza con
-	/// "Serial number already activated". Qui assumo `aa:bb:cc:dd:ee:ff` minuscolo.
+	/// `machId` identifica la macchina sul server: qualunque differenza di formato fa
+	/// risultare ogni utente già attivato su un'altra macchina, con conseguente
+	/// "Serial number already activated".
 	static func netU_getMacAddress () -> String {
 		guard let mac = primaryMACAddress () else { return "" }
 		return mac
@@ -324,6 +373,7 @@ enum Compat {
 		}
 		defer { IOObjectRelease (iterator) }
 
+		var mac: String?
 		var service = IOIteratorNext (iterator)
 		while service != 0 {
 			defer {
@@ -345,8 +395,12 @@ enum Compat {
 				continue
 			}
 
-			return data.map { String (format: "%02x", $0) }.joined (separator: ":")
+			// L'originale non si ferma alla prima interfaccia: sovrascrive a ogni giro
+			// e restituisce l'ULTIMA che risponde. Su un Mac con più di una interfaccia
+			// primaria (Thunderbolt bridge, adattatori USB-Ethernet) fermarsi alla prima
+			// darebbe un machId diverso da quello con cui l'utente è registrato.
+			mac = data.map { String (format: "%02x", $0) }.joined (separator: ":")
 		}
-		return nil
+		return mac
 	}
 }

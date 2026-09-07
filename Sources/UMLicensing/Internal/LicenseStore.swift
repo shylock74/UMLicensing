@@ -66,10 +66,18 @@ struct LicenseStore: @unchecked Sendable {
 		data.licType  = defaults.string (forKey: key ("licType")) ?? ""
 
 		let stored = defaults.string (forKey: key ("validator")) ?? ""
-		guard stored == LicenseValidator.validator (for: data) else {
-			data.errorMessage = Strings.invalidLicense.value
-			data.serialId = ""
-			return data
+		if stored != LicenseValidator.validator (for: data) {
+			// Le prime versioni di questo package firmavano le date in `yyyy-MM-dd`
+			// invece del `dd/MM/yyyy` originale: chi ha girato una di quelle build ha
+			// nei preferences una firma che non torna più. Se è quella, la licenza è
+			// autentica: la accettiamo e riscriviamo subito la firma giusta, così il
+			// giro successivo passa dal percorso normale.
+			guard stored == LicenseValidator.isoValidator (for: data) else {
+				data.errorMessage = Strings.invalidLicense.value
+				data.serialId = ""
+				return data
+			}
+			save (data)
 		}
 		return data
 	}
@@ -111,10 +119,9 @@ struct LicenseStore: @unchecked Sendable {
 
 	// MARK: - Date
 
-	/// ⚠️ `prefs_setValueDate` / `prefs_getValueDate`: assumo che salvino un `Date`
-	/// nativo in UserDefaults. Se invece serializzano una stringa o un `timeIntervalSince1970`,
-	/// le date lette dalle installazioni esistenti risultano sbagliate, il validator non
-	/// torna e l'utente si ritrova non registrato. Da confermare sul sorgente.
+	/// `prefs_setValueDate` / `prefs_getValueDate` fanno `UserDefaults.set(value:)` e
+	/// `object(forKey:) as! Date`: un `Date` nativo. La lettura da stringa resta solo
+	/// come rete di sicurezza per preferences scritti a mano.
 	private func date (forKey k: String) -> Date? {
 		if let d = defaults.object (forKey: k) as? Date { return d }
 		if let s = defaults.string (forKey: k) { return Compat.du_createDateFormStandardString (s) }

@@ -249,6 +249,16 @@ Deliberately preserved:
 - **Storage keys** `license..serialId` and friends — double dot included. Already
   registered users do not lose their license.
 - **Server protocol** — same actions, same MD5 validators.
+- **Date format `dd/MM/yyyy`** (`Compat.du_getDateString`). It goes into the local
+  copy's validator and into the `activate` validator, so it is the format of every
+  license already in the field. Do not "modernise" it to ISO.
+- **Unlock code without MD5** — `racId_getNumbersToLength(appId + serialId + machId +
+  secret, 10)`, digits taken straight from the concatenation, matching what SNGenerator
+  gives support.
+- **MAC address = the last matching primary interface**, not the first. The legacy
+  loop overwrote its result on every iteration; on a Mac with more than one primary
+  Ethernet interface, picking the first yields a different `machId` and the server
+  answers "Serial number already activated".
 
 ### Deliberate quirks
 
@@ -265,28 +275,47 @@ from existing data; `displayName` returns `"upgrade"` for UI use.
 - The mailer used `.urlQueryAllowed` percent-encoding, which lets `&` and `=` through:
   an HTML body containing a link with a query string broke the POST form and arrived
   truncated. Now fully form-encoded.
+- `netU_percEnc` was based on `.urlHostAllowed`, which also lets `&` and `=` through,
+  so a value containing either split the query. Now restricted to unreserved
+  characters, `+` included — the legacy code special-cased `+` for the same reason:
+  left as-is it reaches the server as a space, and an address like `name+tag@x.com`
+  no longer matches the validator computed on it.
+
+### Migration from the first releases of this package
+
+Versions before this one signed the stored license with the dates in `yyyy-MM-dd`
+instead of the original `dd/MM/yyyy`, so on a machine that had run one of them
+`LicenseStore.load()` would find a signature that no longer matches and report the
+license as tampered with. `load()` now recognises that older signature, accepts the
+license, and rewrites it with the correct one — no user is de-registered, and no
+network round trip is needed. See `LicenseValidator.isoValidator`.
 
 ## Not ported
 
 Out of scope by design: Control Panel window, upgrade flow requiring the previous
 serial, bait licenses, `LicenseRemote` (administration API), `UMIntegrityCheck`.
 
-## Open assumptions
+## Checked against the original
 
-Five behaviours were inferred from the legacy call sites rather than read from the
-original UMOmniaFramework sources. All are marked `⚠️` in code.
+The behaviours that decide whether an existing license still validates were read off
+the UMOmniaFramework sources, not guessed:
 
-| Assumption | Location | Risk if wrong |
+| Behaviour | Original | Status |
 |---|---|---|
-| `racId_md5` returns lowercase hex | `Internal/Compat.swift` | No validator matches; all existing licenses rejected |
-| `du_getDateString` format (with or without time) | `Internal/Compat.swift` | Wrong `activate` and local-copy validators |
-| `encapsulateGetValue` uses `<label>…</label>` | `Internal/Compat.swift` | Every server response reads empty |
-| `prefs_setValueDate` stores a native `Date` | `Internal/LicenseStore.swift` | Dates misread, existing users de-registered |
-| `netU_getMacAddress` format | `Internal/Compat.swift` | "Serial number already activated" for everyone |
+| `racId_md5` | `CC_MD5` formatted `%02x` — lowercase hex | matches |
+| `du_getDateString` | `dd/MM/yyyy`, no time | fixed — was ISO |
+| `du_createDateFormStandardString` | day `[0,2)`, month `[3,5)`, year = last 4 | fixed — read ISO first |
+| `encapsulateGetValue` | `<label>…</label>` | matches |
+| `prefs_setValueDate` | native `Date` in `UserDefaults` | matches |
+| `netU_getMacAddress` | lowercase hex, `:` separated, **last** primary interface | fixed — took the first |
+| `getUnlockCode` | no MD5 around the concatenation | fixed — had one |
+| `racId_getNumbersToLength` | `""` when the source has no digits | fixed — returned zeros |
+| Server URL | `https://www.alexraccuglia.net/license/license.asp` | fixed — `www.` was missing |
+| Validator secret | `l1c3n53!` | matches |
+| Unlock secret | `53r141` | matches |
+| `UMLicenseValidationCode` secret and JSON shape | `1òàùéP*'ì1c3n53!`, same key `UMLVC` | matches |
 
-The licensing server URL currently points at `https://alexraccuglia.net/license/license.asp`,
-the only endpoint appearing in clear in the legacy code. Confirm it matches the
-obfuscated `serverUrl` before shipping.
+The server URL is the legacy `License.serverUrl` run through `Splhash.getPlain`.
 
 ## Testing
 
