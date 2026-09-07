@@ -157,17 +157,27 @@ public enum UMLicensing {
 		}
 
 		while true {
+			// L'alert di conferma ha senso solo come risposta a qualcosa che l'utente
+			// ha appena fatto: iniziare il trial o digitare un seriale. Chi aveva già
+			// la licenza — o se l'è vista recuperare dal server dopo una reinstallazione —
+			// non ha chiesto niente, e si vedrebbe annunciare un'attivazione che non
+			// ha svolto. Succedeva al primo avvio dopo l'aggiornamento da UMOmniaFramework.
+			var justAcquired = false
+
 			if !license.isRegistered || license.isExpired {
 				guard let acquired = await acquire (c, startingFromSerial: license.isExpired) else {
 					return false
 				}
 				license = acquired
+				justAcquired = true
 			}
 
 			switch await confirm (license, c) {
 				case .ok (let confirmed):
 					markValidated (confirmed, c)
-					announceActivation (confirmed, appName: c.appName)
+					if justAcquired {
+						announceActivation (confirmed, appName: c.appName)
+					}
 					return true
 
 				case .offline (let tolerated):
@@ -521,6 +531,10 @@ public enum UMLicensing {
 	}
 
 
+	/// Conferma all'utente che l'attivazione è andata a buon fine.
+	///
+	/// Chiamata solo dopo `acquire()`: vedi il commento in `run()` sul perché non
+	/// vada mostrata a chi la licenza ce l'aveva già.
 	private static func announceActivation (_ license: LicenseData, appName: String) {
 		if license.type == .trial {
 			let dateStr = Compat.du_formatDate (license.expDate, formatter: "dd MMMM yyyy")
