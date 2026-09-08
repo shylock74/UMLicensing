@@ -363,6 +363,25 @@ enum Compat {
 	}
 
 
+	/// Due `machId` indicano la stessa macchina.
+	///
+	/// Il confronto è normalizzato — minuscolo, senza separatori — perché lo stesso MAC
+	/// è passato dal server in formati diversi negli anni (`AA:BB:...`, `aabb...`), e una
+	/// differenza di sola forma faceva risultare l'utente attivato altrove.
+	///
+	/// Un `machId` vuoto non combacia con niente: "sconosciuto" non è "uguale".
+	static func machIdMatches (_ a: String, _ b: String) -> Bool {
+		let na = normalizedMachId (a)
+		let nb = normalizedMachId (b)
+		return !na.isEmpty && na == nb
+	}
+
+
+	private static func normalizedMachId (_ s: String) -> String {
+		s.lowercased ().filter { $0.isHexDigit }
+	}
+
+
 	private static func primaryMACAddress () -> String? {
 		let matching = IOServiceMatching ("IOEthernetInterface") as NSMutableDictionary
 		matching [kIOPropertyMatchKey] = ["IOPrimaryInterface": true] as NSDictionary

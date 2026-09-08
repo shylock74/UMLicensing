@@ -710,3 +710,32 @@ final class EmailTests: XCTestCase {
 		XCTAssertEqual (TrialMailer.formEncode (s).removingPercentEncoding, s)
 	}
 }
+
+
+// MARK: - Identificativo macchina
+
+final class MachIdTests: XCTestCase {
+
+	/// Lo stesso MAC scritto in modi diversi resta la stessa macchina. È il confronto
+	/// da cui dipende "Serial number already activated".
+	func testSameMacInDifferentFormatsMatches () {
+		XCTAssertTrue (Compat.machIdMatches ("aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF"))
+		XCTAssertTrue (Compat.machIdMatches ("aa:bb:cc:dd:ee:ff", "aabbccddeeff"))
+		XCTAssertTrue (Compat.machIdMatches ("aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee:ff"))
+	}
+
+
+	func testDifferentMacsDoNotMatch () {
+		XCTAssertFalse (Compat.machIdMatches ("aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:00"))
+	}
+
+
+	/// Un `machId` vuoto è "sconosciuto", non "uguale": è il valore che le macchine
+	/// registrate con UMOmniaFramework hanno nei preferences, e non deve autorizzare
+	/// niente da solo.
+	func testEmptyMachIdNeverMatches () {
+		XCTAssertFalse (Compat.machIdMatches ("", ""))
+		XCTAssertFalse (Compat.machIdMatches ("", "aa:bb:cc:dd:ee:ff"))
+		XCTAssertFalse (Compat.machIdMatches ("aa:bb:cc:dd:ee:ff", ""))
+	}
+}

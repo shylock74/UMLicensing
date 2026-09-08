@@ -404,6 +404,15 @@ public enum UMLicensing {
 					  """)
 			return nil
 		} catch let LicenseServer.ServerError.rejected (message) {
+			// Il server può rifiutare perché il seriale risulta già attivato — su questo
+			// stesso Mac. Succede a chi ha perso i preferences, o a chi arriva da
+			// UMOmniaFramework, dove `getDataByMachId()` sovrascriveva `machId` con
+			// `machId2` (license.swift:551) e quindi il valore salvato non è mai stato
+			// quello vero. Se l'attivazione che il server ha in archivio è di questa
+			// macchina, non c'è niente da riattivare: la adottiamo e basta.
+			if let adopted = await adoptExistingActivation (license, c) {
+				return adopted
+			}
 			Alert.ok ("License", formatServerMessage (message))
 			return nil
 		} catch {
@@ -414,6 +423,39 @@ public enum UMLicensing {
 		c.store.save (license)
 		c.store.lastServerCheck = Date ()
 		return license
+	}
+
+
+	/// Riconosce un seriale che il server considera già attivato **su questa macchina**
+	/// e lo riporta in locale. `nil` in ogni altro caso: il vincolo alla macchina resta,
+	/// qui non si rilascia né si sposta niente.
+	private static func adoptExistingActivation (_ license: LicenseData, _ c: Context) async -> LicenseData? {
+
+		guard !c.machId.isEmpty,
+			  let remote = try? await c.makeServer ().getData (appId: license.appId,
+															   serialId: license.serialId),
+			  Compat.machIdMatches (remote.machId, c.machId) else {
+			return nil
+		}
+
+		var adopted = remote.license
+		adopted.machId = c.machId
+
+		// `parseLicense` lascia le date di default quando il server le manda in un
+		// formato che non sappiamo leggere: in quel caso teniamo quelle che avevamo
+		// calcolato noi, invece di inventare una scadenza.
+		if remote.expDate == nil { adopted.expDate = license.expDate }
+		if remote.regDate == nil { adopted.regDate = license.regDate }
+		if adopted.username.isEmpty { adopted.username = license.username }
+		if adopted.email.isEmpty    { adopted.email    = license.email }
+		if adopted.licType.isEmpty  { adopted.licType  = license.licType }
+
+		// Una licenza scaduta resta scaduta: il rifiuto del server poteva essere quello.
+		guard !adopted.isExpired else { return nil }
+
+		c.store.save (adopted)
+		c.store.lastServerCheck = Date ()
+		return adopted
 	}
 
 
@@ -439,7 +481,20 @@ public enum UMLicensing {
 			let remote = try await c.makeServer ().getData (appId: license.appId,
 															serialId: license.serialId)
 
-			if !remote.machId.isEmpty, remote.machId != license.machId {
+			// Il seriale risulta legato a una macchina: va bene finché è questa.
+			//
+			// Non basta confrontarlo col `machId` salvato nei preferences: fino
+			// all'ultima versione di UMOmniaFramework `getDataByMachId()` assegnava
+			// `machId` due volte di fila, la seconda con il valore di `machId2`
+			// (license.swift:550-551), e all'avvio salvava quella licenza in locale.
+			// Sulle macchine già registrate il `machId` nei preferences è quindi vuoto,
+			// mentre sul server c'è il MAC vero: confrontando solo quei due valori ogni
+			// utente storico si vedeva rifiutare la licenza al primo avvio con questa
+			// versione. Il vecchio codice, del resto, il confronto lo faceva solo in
+			// fase di attivazione (license.swift:619), mai a ogni lancio.
+			if !remote.machId.isEmpty,
+			   !Compat.machIdMatches (remote.machId, c.machId),
+			   !Compat.machIdMatches (remote.machId, license.machId) {
 				return .rejected (Strings.serialAlreadyActivated.value)
 			}
 
@@ -449,6 +504,19 @@ public enum UMLicensing {
 			// una licenza sulla base di un campo che non sappiamo interpretare
 			// significa bloccare fuori un cliente pagante.
 			var updated = license
+
+			// Licenza di questa macchina con un `machId` locale vuoto o scritto in un
+			// altro formato: lo riallineiamo, così dal giro successivo il controllo passa
+			// dal confronto diretto e `UMLicenseValidationCode` viene firmato col valore
+			// giusto. Se invece il server è d'accordo col valore salvato ma non col MAC
+			// attuale (scheda di rete sostituita) teniamo quello salvato: è l'unico che
+			// il server riconosce.
+			if !c.machId.isEmpty,
+			   !Compat.machIdMatches (updated.machId, c.machId),
+			   remote.machId.isEmpty || Compat.machIdMatches (remote.machId, c.machId) {
+				updated.machId = c.machId
+			}
+
 			if let remoteExp = remote.expDate { updated.expDate = remoteExp }
 			if let remoteReg = remote.regDate { updated.regDate = remoteReg }
 
