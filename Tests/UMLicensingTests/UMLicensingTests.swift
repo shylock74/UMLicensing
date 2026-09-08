@@ -739,3 +739,30 @@ final class MachIdTests: XCTestCase {
 		XCTAssertFalse (Compat.machIdMatches ("aa:bb:cc:dd:ee:ff", ""))
 	}
 }
+
+
+// MARK: - Presenza del seriale nel database
+
+final class SerialLookupTests: XCTestCase {
+
+	/// Il messaggio del server è testo libero: solo la famiglia "non esiste" vale come
+	/// seriale assente, ed è quella che fa comparire "Errore: DNF" nel pannello.
+	func testUnknownSerialMessagesAreRecognised () {
+		for message in ["Serial doesn't exist",
+						"This serial does not exist in the database",
+						"S/N doesn't exists"] {
+			XCTAssertTrue (LicenseServer.isUnknownSerialMessage (message), message)
+		}
+	}
+
+
+	/// Ogni altro rifiuto riguarda un seriale che nel database c'è: segnalarlo come
+	/// assente bloccherebbe chi ha una licenza vera, solo scaduta o già attivata.
+	func testOtherRejectionsAreNotAbsence () {
+		for message in ["Serial number already activated.",
+						"Your trial license has expired.",
+						""] {
+			XCTAssertFalse (LicenseServer.isUnknownSerialMessage (message), message)
+		}
+	}
+}

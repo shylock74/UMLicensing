@@ -4,8 +4,13 @@
 //
 //  Le tre schermate del flusso di licenza, equivalenti ai vecchi d3, d4 e d8.
 //
+//  I pulsanti sono tutti `UMUICapsuleButton`: le finestre di licenza sono la prima
+//  cosa che l'utente vede dell'app, e con i pulsanti di sistema stonavano col resto
+//  delle interfacce. Azione primaria in `.accent`, tutto il resto in `.gray`.
+//
 
 import SwiftUI
+import UMUIControls
 
 
 // MARK: - d3: scelta iniziale
@@ -30,30 +35,25 @@ struct ChooseLicenseView: View {
 
 			LicenseHeader (appName: appName, subtitle: "This copy is not registered yet.")
 
-			VStack (spacing: 12) {
-				Button {
+			VStack (alignment: .leading, spacing: 18) {
+				ChoiceRow (title: "Start Free Trial",
+						   detail: "\(trialExpDays) days, full features. We'll email you the serial number.") {
 					finish (.startTrial)
-				} label: {
-					ChoiceLabel (title: "Start Free Trial",
-								 detail: "\(trialExpDays) days, full features. We'll email you the serial number.")
 				}
 
-				Button {
+				ChoiceRow (title: "I Have a Serial Number",
+						   detail: "Enter the serial number you received when you purchased.") {
 					finish (.insertSerial)
-				} label: {
-					ChoiceLabel (title: "I Have a Serial Number",
-								 detail: "Enter the serial number you received when you purchased.")
 				}
 			}
-			.buttonStyle (.plain)
+			.frame (maxWidth: .infinity, alignment: .leading)
 
 			HStack {
-				Button ("Buy a License") { open (purchaseUrl) }
-					.buttonStyle (.link)
+				UMUICapsuleButton ("Buy a License", style: .gray, size: .normal) { open (purchaseUrl) }
 
 				Spacer ()
 
-				Button ("Quit") { finish (.quit) }
+				UMUICapsuleButton ("Quit", style: .gray, size: .normal) { finish (.quit) }
 					.keyboardShortcut (.cancelAction)
 			}
 		}
@@ -118,19 +118,22 @@ struct TrialSignupView: View {
 			}
 
 			HStack {
-				Button ("Back") { finish (nil) }
+				UMUICapsuleButton ("Back", style: .gray, size: .normal) { finish (nil) }
 					.keyboardShortcut (.cancelAction)
 
 				Spacer ()
 
 				if confirming {
-					Button ("Let Me Check Again") { confirming = false }
-					Button ("Yes, That's My Email") {
+					UMUICapsuleButton ("Let Me Check Again", style: .gray, size: .normal) {
+						confirming = false
+					}
+
+					UMUICapsuleButton ("Yes, That's My Email", style: .accent, size: .normal) {
 						finish (TrialSignup (username: username, email: email))
 					}
 					.keyboardShortcut (.defaultAction)
 				} else {
-					Button ("Continue") { validate () }
+					UMUICapsuleButton ("Continue", style: .accent, size: .normal) { validate () }
 						.keyboardShortcut (.defaultAction)
 				}
 			}
@@ -171,10 +174,15 @@ struct InsertSerialView: View {
 	let purchaseUrl: String
 	let isSerialValid: @Sendable (String) -> Bool
 	let checkConnection: @Sendable () async -> Bool
+	/// Cerca il seriale nel database del server. Le cifre di controllo dicono solo che
+	/// il seriale è ben formato, non che esista davvero.
+	let lookUpSerial: @Sendable (String) async -> LicenseServer.SerialLookup
 	let finish: @MainActor (SerialOutcome) -> Void
 
 	@State private var serial = ""
 	@State private var connected: Bool?
+	@State private var lookup: LicenseServer.SerialLookup?
+	@State private var checking = false
 
 	private var trimmed: String {
 		serial.uppercased ().trimmingCharacters (in: .whitespacesAndNewlines)
@@ -182,6 +190,18 @@ struct InsertSerialView: View {
 
 	private var valid: Bool {
 		isSerialValid (trimmed)
+	}
+
+	/// I trial se li genera il client e li carica lui sul server: se uno non risulta nel
+	/// database può essere semplicemente un caricamento fallito, e `activate()` lo
+	/// registra da sé. Per tutti gli altri tipi un seriale assente non è mai stato
+	/// venduto, quindi non deve poter proseguire.
+	private var isTrial: Bool {
+		licenseType (serialId: trimmed) == .trial
+	}
+
+	private var notInDatabase: Bool {
+		valid && !isTrial && lookup == .notFound
 	}
 
 	var body: some View {
@@ -194,35 +214,28 @@ struct InsertSerialView: View {
 				TextField ("XXXXX-00000000-0000000", text: $serial)
 					.textFieldStyle (.roundedBorder)
 					.font (.system (.body, design: .monospaced))
-					.onSubmit { if valid { finish (.serial (trimmed)) } }
+					.onSubmit { if valid, !checking, !notInDatabase { finish (.serial (trimmed)) } }
 
-				Button ("Paste") {
+				UMUICapsuleButton ("Paste", style: .gray, size: .normal) {
 					if let clip = SerialScanner.serialInClipboard () { serial = clip }
 				}
 			}
 
-			HStack (spacing: 6) {
-				Image (systemName: valid ? "checkmark.circle.fill" : "xmark.circle.fill")
-				Text (valid ? "Serial number valid" : "Serial number not valid")
-			}
-			.font (.callout)
-			.foregroundStyle (trimmed.isEmpty ? .secondary : (valid ? Color.green : Color.red))
-			.opacity (trimmed.isEmpty ? 0.6 : 1)
+			SerialStatus (state: statusState)
 
 			ConnectionIndicator (connected: connected)
 
 			HStack {
-				Button ("Buy a License") { open (purchaseUrl) }
-					.buttonStyle (.link)
+				UMUICapsuleButton ("Buy a License", style: .gray, size: .normal) { open (purchaseUrl) }
 
 				Spacer ()
 
-				Button ("Quit") { finish (.quit) }
+				UMUICapsuleButton ("Quit", style: .gray, size: .normal) { finish (.quit) }
 					.keyboardShortcut (.cancelAction)
 
-				Button ("OK") { finish (.serial (trimmed)) }
+				UMUICapsuleButton ("OK", style: .accent, size: .normal) { finish (.serial (trimmed)) }
 					.keyboardShortcut (.defaultAction)
-					.disabled (!valid)
+					.capsuleEnabled (valid && !checking && !notInDatabase)
 			}
 		}
 		.padding (28)
@@ -232,6 +245,23 @@ struct InsertSerialView: View {
 			// all'utente la digitazione, che su 22 caratteri è la fonte di errore principale.
 			if let clip = SerialScanner.serialInClipboard () { serial = clip }
 		}
+		.task (id: trimmed) {
+			lookup   = nil
+			checking = false
+			guard valid else { return }
+
+			// Mezzo secondo di attesa: senza, il server viene interrogato a ogni tasto
+			// premuto mentre l'utente digita il seriale.
+			try? await Task.sleep (for: .milliseconds (500))
+			guard !Task.isCancelled else { return }
+
+			checking = true
+			let result = await lookUpSerial (trimmed)
+			guard !Task.isCancelled else { return }
+
+			lookup   = result
+			checking = false
+		}
 		.task {
 			while !Task.isCancelled {
 				connected = await checkConnection ()
@@ -239,10 +269,84 @@ struct InsertSerialView: View {
 			}
 		}
 	}
+
+
+	private var statusState: SerialStatus.State {
+		if trimmed.isEmpty          { return .empty }
+		if !valid                   { return .malformed }
+		if checking                 { return .checking }
+		if notInDatabase            { return .notInDatabase }
+		return .ok
+	}
 }
 
 
 // MARK: - Pezzi comuni
+
+/// La riga sotto il campo del seriale. Distingue tre cose che l'utente confonde
+/// facilmente: seriale scritto male, seriale ben scritto ma sconosciuto al server,
+/// seriale buono.
+private struct SerialStatus: View {
+
+	enum State {
+		case empty
+		case malformed
+		case checking
+		case notInDatabase
+		case ok
+	}
+
+	let state: State
+
+	var body: some View {
+		VStack (alignment: .leading, spacing: 2) {
+			HStack (spacing: 6) {
+				Image (systemName: icon)
+				Text (text)
+			}
+			.font (.callout)
+			.foregroundStyle (color)
+
+			if state == .notInDatabase {
+				Text ("This serial number is not in the licensing database.")
+					.font (.caption)
+					.foregroundStyle (.secondary)
+			}
+		}
+		.opacity (state == .empty ? 0.6 : 1)
+		.frame (maxWidth: .infinity, alignment: .leading)
+	}
+
+
+	private var icon: String {
+		switch state {
+			case .empty, .malformed:  return "xmark.circle.fill"
+			case .checking:           return "ellipsis.circle"
+			case .notInDatabase:      return "exclamationmark.triangle.fill"
+			case .ok:                 return "checkmark.circle.fill"
+		}
+	}
+
+
+	private var text: String {
+		switch state {
+			case .empty, .malformed:  return "Serial number not valid"
+			case .checking:           return "Checking the serial number…"
+			case .notInDatabase:      return "Errore: DNF ⚠️"
+			case .ok:                 return "Serial number valid"
+		}
+	}
+
+
+	private var color: Color {
+		switch state {
+			case .empty, .checking:          return .secondary
+			case .malformed, .notInDatabase: return .red
+			case .ok:                        return .green
+		}
+	}
+}
+
 
 private struct LicenseHeader: View {
 	let appName: String
@@ -261,20 +365,23 @@ private struct LicenseHeader: View {
 }
 
 
-private struct ChoiceLabel: View {
+/// Una delle due scelte della prima schermata: il pulsante, e sotto la riga che
+/// spiega cosa succede premendolo.
+private struct ChoiceRow: View {
 	let title: String
 	let detail: String
+	let action: @MainActor () -> Void
 
 	var body: some View {
-		VStack (alignment: .leading, spacing: 3) {
-			Text (title).font (.headline)
-			Text (detail).font (.callout).foregroundStyle (.secondary)
+		VStack (alignment: .leading, spacing: 6) {
+			UMUICapsuleButton (title, style: .accent, size: .normal) { action () }
+
+			Text (detail)
+				.font (.callout)
+				.foregroundStyle (.secondary)
 				.fixedSize (horizontal: false, vertical: true)
 		}
 		.frame (maxWidth: .infinity, alignment: .leading)
-		.padding (14)
-		.background (.quaternary.opacity (0.5), in: RoundedRectangle (cornerRadius: 10))
-		.contentShape (RoundedRectangle (cornerRadius: 10))
 	}
 }
 
@@ -309,6 +416,20 @@ private struct ConnectionIndicator: View {
 		}
 		.font (.caption)
 		.foregroundStyle (.secondary)
+	}
+}
+
+
+private extension View {
+
+	/// `UMUICapsuleButton` disegna sé stesso con un `ButtonStyle` proprio, e SwiftUI
+	/// non lo attenua quando è disabilitato: senza questo, "OK" resterebbe acceso e
+	/// invitante anche quando premerlo non fa niente.
+	func capsuleEnabled (_ enabled: Bool) -> some View {
+		self
+			.disabled (!enabled)
+			.saturation (enabled ? 1 : 0)
+			.opacity (enabled ? 1 : 0.45)
 	}
 }
 

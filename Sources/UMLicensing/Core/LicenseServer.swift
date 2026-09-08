@@ -62,6 +62,48 @@ actor LicenseServer {
 	}
 
 
+	/// Esito della ricerca di un seriale nel database del server.
+	enum SerialLookup: Sendable, Equatable {
+		/// Il server conosce questo seriale.
+		case found
+		/// Il server ha risposto che non ce l'ha.
+		case notFound
+		/// Non lo sappiamo: server irraggiungibile o risposta illeggibile. In questo
+		/// caso non si blocca niente — un problema di rete non è colpa dell'utente.
+		case unknown
+	}
+
+
+	/// Il server ci sta dicendo che quel seriale non è nel database.
+	///
+	/// Il messaggio è testo libero deciso dal backend, quindi il riconoscimento è per
+	/// forza approssimativo: nel dubbio si conclude che il seriale c'è.
+	static func isUnknownSerialMessage (_ message: String) -> Bool {
+		let lower = message.lowercased ()
+		return lower.contains ("doesn't exist")
+			|| lower.contains ("does not exist")
+			|| lower.contains ("doesn't exists")
+	}
+
+
+	/// Cerca il seriale nel database, senza attivarlo né modificarlo.
+	///
+	/// Serve al pannello di inserimento: un seriale può essere formalmente valido —
+	/// le cifre di controllo tornano — e non essere mai stato venduto.
+	func lookUpSerial (appId: String, serialId: String) async -> SerialLookup {
+		do {
+			let remote = try await getData (appId: appId, serialId: serialId)
+			return remote.serialId.isEmpty ? .notFound : .found
+		} catch let ServerError.rejected (message) {
+			// Solo il "non esiste" vale come assenza: ogni altro rifiuto (scaduta,
+			// già attivata) riguarda un seriale che nel database c'è eccome.
+			return LicenseServer.isUnknownSerialMessage (message) ? .notFound : .found
+		} catch {
+			return .unknown
+		}
+	}
+
+
 	// MARK: - Chiamate
 
 	/// Recupera la licenza associata a questa macchina. È il primo passo dell'avvio:
@@ -125,8 +167,13 @@ actor LicenseServer {
 		if !errorCode.isEmpty, errorCode != "0" {
 			let errorMessage = Compat.encapsulateGetValue (srcText: response, label: "errorMessage")
 
-			let lowerMsg = errorMessage.lowercased ()
-			if lowerMsg.contains ("doesn't exist") || lowerMsg.contains ("does not exist") || lowerMsg.contains ("doesn't exists") {
+			// L'auto-registrazione vale solo per i trial: quelli li genera il client, e
+			// se `uploadNewLicense` non era andata a buon fine il seriale è legittimo
+			// ma manca dal database. Un seriale full, gift, special o upgrade che il
+			// server non conosce, invece, non l'abbiamo venduto noi: caricarlo qui
+			// significherebbe fabbricare una licenza su richiesta di chi la inserisce.
+			if licenseType (serialId: license.serialId) == .trial,
+			   LicenseServer.isUnknownSerialMessage (errorMessage) {
 				try? await uploadNewLicense (appId: license.appId,
 											serialId: license.serialId,
 											expDate: license.expDate,

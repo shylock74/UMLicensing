@@ -206,8 +206,8 @@ public enum UMLicensing {
 
 
 	private static func formatServerMessage (_ message: String) -> String {
-		let lower = message.lowercased ()
-		if lower.contains ("doesn't exist") || lower.contains ("does not exist") || lower.contains ("invalid s/n") {
+		if LicenseServer.isUnknownSerialMessage (message)
+			|| message.lowercased ().contains ("invalid s/n") {
 			return "\(Strings.invalidSN.value).\n\(Strings.checkIfYouTypedCorrectly.value)."
 		}
 		return message.isEmpty ? Strings.invalidLicense.value : message
@@ -279,6 +279,7 @@ public enum UMLicensing {
 										  purchaseUrl: c.purchaseUrl,
 										  isSerialValid: { c.isSerialValid ($0) },
 										  checkConnection: { await c.makeServer ().isReachable () },
+										  lookUpSerial: { await c.makeServer ().lookUpSerial (appId: c.appId, serialId: $0) },
 										  finish: finish)
 					}
 
