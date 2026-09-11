@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "UMLicensing",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v11)
     ],
     products: [
         .library(

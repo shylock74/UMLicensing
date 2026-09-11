@@ -252,7 +252,10 @@ struct InsertSerialView: View {
 
 			// Mezzo secondo di attesa: senza, il server viene interrogato a ogni tasto
 			// premuto mentre l'utente digita il seriale.
-			try? await Task.sleep (for: .milliseconds (500))
+			// `Task.sleep (for:)` richiede macOS 13: qui si resta sulla variante in
+			// nanosecondi, disponibile da macOS 10.15, perché il package deve linkare
+			// anche nelle app ancora ferme a Big Sur.
+			try? await Task.sleep (nanoseconds: 500_000_000)
 			guard !Task.isCancelled else { return }
 
 			checking = true
@@ -265,7 +268,7 @@ struct InsertSerialView: View {
 		.task {
 			while !Task.isCancelled {
 				connected = await checkConnection ()
-				try? await Task.sleep (for: .seconds (5))
+				try? await Task.sleep (nanoseconds: 5_000_000_000)
 			}
 		}
 	}
