@@ -54,9 +54,11 @@ actor LicenseServer {
 
 	enum ServerError: Error, Sendable {
 		/// Il server non è raggiungibile. Distinto dal rifiuto: qui scatta il grace period.
-		case unreachable
-		/// Il server ha risposto ma il validator non torna: risposta non autentica.
-		case notValidated
+		/// Il codice dice *come* non è raggiungibile: DNS, TLS, timeout, HTTP 500...
+		case unreachable (UMLicensingCode)
+		/// Il server ha risposto ma la risposta non è utilizzabile: firma che non torna,
+		/// formato sconosciuto, pagina HTML al posto della licenza.
+		case notValidated (UMLicensingCode)
 		/// Il server ha rifiutato con un messaggio.
 		case rejected (String)
 	}
@@ -117,7 +119,16 @@ actor LicenseServer {
 		])
 
 		guard !Compat.encapsulateGetValue (srcText: response, label: "serialId").isEmpty else {
-			throw ServerError.rejected (Compat.encapsulateGetValue (srcText: response, label: "errorMessage"))
+			let errorMessage = Compat.encapsulateGetValue (srcText: response, label: "errorMessage")
+
+			// Niente seriale e nemmeno un messaggio d'errore: non è un rifiuto, è una
+			// risposta che non sappiamo leggere. Trattarla come rifiuto cancellerebbe
+			// una licenza buona.
+			guard !errorMessage.isEmpty else {
+				Diagnostics.diagnose (.missingSerialField, "getDataByMachId", response)
+				throw ServerError.notValidated (LicenseServer.responseShape (response))
+			}
+			throw ServerError.rejected (errorMessage)
 		}
 		return try parseLicense (from: response)
 	}
@@ -274,10 +285,19 @@ actor LicenseServer {
 		let validator = Compat.encapsulateGetValue (srcText: response, label: "validator")
 
 		guard LicenseValidator.hash (data) == validator else {
-			// Campi vuoti su una risposta non vuota = il delimitatore assunto da
-			// `encapsulateGetValue` non è quello che usa il server.
-			Diagnostics.log ("validator non corrispondente. data=\"\(data)\" validator=\"\(validator)\"")
-			throw ServerError.notValidated
+			// Tre casi diversi, e distinguerli è tutto il punto dei codici:
+			//  - risposta HTML/errore PHP  → il backend è rotto o risponde altro
+			//  - tag assenti               → il delimitatore assunto da `encapsulateGetValue`
+			//                                non è quello che usa il server
+			//  - tag presenti, firma no    → segreto o formato della firma diverso
+			let code: UMLicensingCode = data.isEmpty || validator.isEmpty
+				? LicenseServer.responseShape (response)
+				: .validatorMismatch
+
+			Diagnostics.diagnose (code,
+								  "parseLicense",
+								  "data=\"\(data)\" validator=\"\(validator)\" atteso=\"\(LicenseValidator.hash (data))\"")
+			throw ServerError.notValidated (code)
 		}
 
 		var license = LicenseData ()
@@ -307,7 +327,9 @@ actor LicenseServer {
 		if let parsedReg { license.regDate = parsedReg }
 
 		if parsedExp == nil {
-			Diagnostics.log ("expDate illeggibile dal server: \"\(expDateS)\" — mantengo la scadenza locale")
+			Diagnostics.diagnose (.unreadableDate,
+								  "parseLicense",
+								  "expDate=\"\(expDateS)\" — mantengo la scadenza locale")
 		}
 
 		return RemoteLicense (license: license, expDate: parsedExp, regDate: parsedReg)
@@ -315,6 +337,25 @@ actor LicenseServer {
 
 
 	// MARK: - Trasporto
+
+	/// Che forma ha una risposta che non sappiamo leggere.
+	///
+	/// Serve a separare "il backend ha sputato una pagina di errore" da "i tag non sono
+	/// quelli che ci aspettiamo": la prima è un problema del server, la seconda un
+	/// disallineamento di protocollo — per esempio dopo il passaggio da ASP a PHP.
+	static func responseShape (_ response: String) -> UMLicensingCode {
+		let trimmed = response.trimmingCharacters (in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return .emptyResponse }
+
+		let lower = trimmed.lowercased ()
+		if lower.hasPrefix ("<!doctype") || lower.hasPrefix ("<html")
+			|| lower.contains ("<body") || lower.contains ("fatal error")
+			|| lower.contains ("<b>warning</b>") || lower.contains ("parse error") {
+			return .htmlErrorPage
+		}
+		return .malformedResponse
+	}
+
 
 	private func get (_ params: [(String, String)]) async throws -> String {
 		// Query costruita a mano, come `netU_getGetUrl`: `URLComponents` lascia in
@@ -324,26 +365,57 @@ actor LicenseServer {
 			.map { "\($0.0)=\(Compat.netU_percEnc ($0.1))" }
 			.joined (separator: "&")
 
+		let action = params.first?.1 ?? "?"
+
 		guard let url = URL (string: baseUrl + "?" + query) else {
-			throw ServerError.unreachable
+			Diagnostics.diagnose (.badUrl, action, baseUrl)
+			throw ServerError.unreachable (.badUrl)
 		}
 
-		Diagnostics.log ("GET \(params.first?.1 ?? "?") -> \(url.absoluteString)")
+		Diagnostics.log ("GET \(action) -> \(url.absoluteString)")
 
+		let data: Data
+		let urlResponse: URLResponse
 		do {
-			let (data, _) = try await session.data (from: url)
-			let response = String (decoding: data, as: UTF8.self)
-			Diagnostics.logResponse (params.first?.1 ?? "?", response)
-			return response
+			(data, urlResponse) = try await session.data (from: url)
 		} catch {
-			Diagnostics.log ("GET fallita: \(error.localizedDescription)")
-			throw ServerError.unreachable
+			// Il codice dice quale ostacolo si è incontrato: senza, "irraggiungibile"
+			// copre allo stesso modo il Wi-Fi spento, il DNS bloccato dal captive portal,
+			// il proxy aziendale che rompe il TLS e il server semplicemente giù.
+			let code = UMLicensingCode.transport (error)
+			let ns   = error as NSError
+			Diagnostics.diagnose (code, action, "\(ns.domain) \(ns.code): \(error.localizedDescription)")
+			throw ServerError.unreachable (code)
 		}
+
+		let status = (urlResponse as? HTTPURLResponse)?.statusCode ?? 0
+		let response = String (decoding: data, as: UTF8.self)
+		Diagnostics.logResponse (action, response, status: status)
+
+		// Fino a ora lo stato HTTP non veniva guardato: una 500 o la pagina di cortesia
+		// dell'hosting arrivava fino al parser e usciva come "risposta non autentica",
+		// cioè con la faccia di un problema di firma invece che di un server rotto.
+		guard status == 0 || (200 ..< 300).contains (status) else {
+			Diagnostics.diagnose (.httpStatus, action, "HTTP \(status), \(response.count) caratteri")
+			throw ServerError.unreachable (.httpStatus)
+		}
+
+		guard !response.trimmingCharacters (in: .whitespacesAndNewlines).isEmpty else {
+			Diagnostics.diagnose (.emptyResponse, action, "HTTP \(status)")
+			throw ServerError.unreachable (.emptyResponse)
+		}
+
+		return response
 	}
 
 
 	private func post (_ params: [String: String]) async throws -> String {
-		guard let url = URL (string: baseUrl) else { throw ServerError.unreachable }
+		let action = params ["action"] ?? "?"
+
+		guard let url = URL (string: baseUrl) else {
+			Diagnostics.diagnose (.badUrl, action, baseUrl)
+			throw ServerError.unreachable (.badUrl)
+		}
 
 		var request = URLRequest (url: url)
 		request.httpMethod = "POST"
@@ -354,14 +426,24 @@ actor LicenseServer {
 			.utf8)
 
 		do {
-			let (data, _) = try await session.data (for: request)
+			let (data, urlResponse) = try await session.data (for: request)
+			let status = (urlResponse as? HTTPURLResponse)?.statusCode ?? 0
 			let response = String (decoding: data, as: UTF8.self)
 				.replacingOccurrences (of: "<br>", with: "")
-			Diagnostics.logResponse (params ["action"] ?? "?", response)
+			Diagnostics.logResponse (action, response, status: status)
+
+			guard status == 0 || (200 ..< 300).contains (status) else {
+				Diagnostics.diagnose (.httpStatus, action, "HTTP \(status)")
+				throw ServerError.unreachable (.httpStatus)
+			}
 			return response
+		} catch let error as ServerError {
+			throw error
 		} catch {
-			Diagnostics.log ("POST fallita: \(error.localizedDescription)")
-			throw ServerError.unreachable
+			let code = UMLicensingCode.transport (error)
+			let ns   = error as NSError
+			Diagnostics.diagnose (code, action, "\(ns.domain) \(ns.code): \(error.localizedDescription)")
+			throw ServerError.unreachable (code)
 		}
 	}
 }

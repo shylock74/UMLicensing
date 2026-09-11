@@ -766,3 +766,58 @@ final class SerialLookupTests: XCTestCase {
 		}
 	}
 }
+
+
+// MARK: - Codici diagnostici
+
+/// Il punto dei codici è separare cause che prima finivano tutte nello stesso alert:
+/// se questi test si allentano, l'alert torna a dire "controlla la connessione" a chi
+/// ha un problema di server.
+final class DiagnosticCodeTests: XCTestCase {
+
+	func testCodesAreUnique () {
+		let all: [UMLicensingCode] = [
+			.badUrl, .noInternet, .timeout, .dnsFailure, .cannotConnect, .tlsFailure,
+			.networkOther, .httpStatus, .emptyResponse,
+			.validatorMismatch, .malformedResponse, .htmlErrorPage, .unreadableDate, .missingSerialField,
+			.noLocalLicense, .localValidatorMismatch, .licenseExpired, .serialFailsLocalCheck,
+			.notPerpetual, .noValidationCode, .validationCodeMismatch, .emptyMachId,
+			.graceExpired, .neverChecked,
+		]
+
+		XCTAssertEqual (Set (all.map (\.rawValue)).count, all.count, "codici duplicati")
+		XCTAssertTrue (all.allSatisfy { !$0.text.isEmpty })
+		XCTAssertTrue (all.allSatisfy { $0.display.hasPrefix ("UML-E") })
+	}
+
+
+	func testTransportMapping () {
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.notConnectedToInternet)), .noInternet)
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.timedOut)),               .timeout)
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.cannotFindHost)),         .dnsFailure)
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.cannotConnectToHost)),    .cannotConnect)
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.secureConnectionFailed)), .tlsFailure)
+		XCTAssertEqual (UMLicensingCode.transport (URLError (.unsupportedURL)),         .networkOther)
+	}
+
+
+	/// Una pagina di errore del backend non deve passare per "risposta manomessa":
+	/// è esattamente il caso che si presenta se il PHP va in fatal error.
+	func testResponseShape () {
+		XCTAssertEqual (LicenseServer.responseShape (""),           .emptyResponse)
+		XCTAssertEqual (LicenseServer.responseShape ("   \n  "),    .emptyResponse)
+		XCTAssertEqual (LicenseServer.responseShape ("<!DOCTYPE html><html><body>404</body></html>"), .htmlErrorPage)
+		XCTAssertEqual (LicenseServer.responseShape ("<br /><b>Fatal error</b>: uncaught"),           .htmlErrorPage)
+		XCTAssertEqual (LicenseServer.responseShape ("serialId=PC20F-00000001-1234567"),             .malformedResponse)
+	}
+
+
+	func testDiagnosisDisplay () {
+		let both = UMLicensingDiagnosis (server: .timeout, local: .notPerpetual)
+		XCTAssertEqual (both.display, "UML-E103 / UML-E305")
+
+		let serverOnly = UMLicensingDiagnosis (server: .httpStatus)
+		XCTAssertEqual (serverOnly.display, "UML-E108")
+		XCTAssertTrue (serverOnly.logLine.contains ("HTTP"))
+	}
+}

@@ -95,6 +95,54 @@ public enum UMLicensing {
 	}
 
 
+	/// Log dettagliato di tutto lo scambio col server, risposte grezze comprese.
+	///
+	/// Equivale a `defaults write <bundle-id> UMLicensing.debug -bool YES`, ma si può
+	/// accendere da codice prima di chiamare `licensed()`. I codici diagnostici
+	/// (`UML-Exxx`) vengono stampati comunque, anche con questo a `false`.
+	public static var verboseLogging: Bool {
+		get { Diagnostics.forceEnabled }
+		set { Diagnostics.forceEnabled = newValue }
+	}
+
+
+	/// Stato della licenza in forma leggibile, da allegare a una segnalazione.
+	///
+	/// Non tocca la rete: dice cosa c'è su questo Mac e come sta rispetto al grace
+	/// period, che è la metà della risposta quando salta fuori un `UML-E3xx`/`E4xx`.
+	public static func diagnosticReport (appId: String, graceDays: Int = 30) -> String {
+		let store   = LicenseStore (appId: appId)
+		let license = store.load ()
+		let machId  = Compat.netU_getMacAddress ()
+		let saved   = UMLicenseValidationCode.load ()
+
+		let expected = UMLicenseValidationCode (appId: license.appId,
+												serialNumber: license.serialId,
+												machineID: license.machId)
+
+		let last = store.lastServerCheck
+		let days = last.map { Compat.du_getDeltaDate (firstDate: $0, secondDate: Date ()) }
+
+		return """
+		UMLicensing diagnostic report
+		  appId              \(appId)
+		  serialId           \(license.serialId.isEmpty ? "—" : license.serialId)
+		  licType            \(license.licType.isEmpty ? "—" : license.licType)
+		  perpetual          \(license.type.isPerpetual)
+		  regDate            \(Compat.du_getDateString (license.regDate))
+		  expDate            \(Compat.du_getDateString (license.expDate))
+		  expired            \(license.isExpired)
+		  registered         \(license.isRegistered)
+		  storeError         \(license.errorMessage.isEmpty ? "—" : license.errorMessage)
+		  machId (store)     \(license.machId.isEmpty ? "—" : license.machId)
+		  machId (this Mac)  \(machId.isEmpty ? "— (UML-E308)" : machId)
+		  validationCode     \(saved == nil ? "assente (UML-E306)" : (saved?.validationCode == expected.expectedCode () ? "corrisponde" : "non corrisponde (UML-E307)"))
+		  lastServerCheck    \(last.map { Compat.du_getDateString ($0) } ?? "mai (UML-E402)")
+		  giorni dall'ultimo \(days.map (String.init) ?? "—") su \(graceDays) \((days ?? 0) > graceDays ? "(UML-E401)" : "")
+		"""
+	}
+
+
 	/// La licenza attualmente salvata, senza toccare la rete né mostrare finestre.
 	public static func currentLicense (appId: String) -> LicenseData {
 		LicenseStore (appId: appId).load ()
@@ -140,6 +188,8 @@ public enum UMLicensing {
 
 		var license = c.store.load ()
 
+		Diagnostics.log ("avvio: \(stateSummary (license, c))")
+
 		// Percorso veloce: licenza perpetua già confermata dal server di recente.
 		// Nessuna rete, nessuna attesa all'avvio; il rinnovo del grace period viene
 		// tentato in sottofondo senza mai mostrare nulla all'utente.
@@ -180,16 +230,10 @@ public enum UMLicensing {
 					}
 					return true
 
-				case .offline (let tolerated):
+				case .offline (let tolerated, let diagnosis):
 					guard tolerated else {
-						Alert.ok ("Cannot Reach the Licensing Server",
-								  """
-								  \(c.appName) could not verify your license because the licensing \
-								  server is unreachable, and it has been more than \(c.graceDays) days \
-								  since the last successful check.
-
-								  Check your internet connection, firewall or VPN, then try again.
-								  """)
+						Alert.ok (offlineAlertTitle (diagnosis),
+								  offlineAlertBody (diagnosis, c))
 						return false
 					}
 					markValidated (license, c)
@@ -202,6 +246,68 @@ public enum UMLicensing {
 					license = LicenseData ()
 			}
 		}
+	}
+
+
+	/// Il titolo dice la verità sulla causa: "server irraggiungibile" su una risposta
+	/// arrivata regolarmente ma illeggibile manda l'utente a controllare il router per
+	/// un problema che è nostro.
+	private static func offlineAlertTitle (_ diagnosis: UMLicensingDiagnosis) -> String {
+		switch diagnosis.server {
+			case .validatorMismatch, .malformedResponse, .htmlErrorPage,
+				 .unreadableDate, .missingSerialField, .httpStatus:
+				return "Licensing Server Problem"
+			default:
+				return "Cannot Reach the Licensing Server"
+		}
+	}
+
+
+	private static func offlineAlertBody (_ diagnosis: UMLicensingDiagnosis, _ c: Context) -> String {
+
+		// Cosa è successo lato server.
+		let cause: String
+		switch diagnosis.server {
+			case .validatorMismatch, .malformedResponse, .htmlErrorPage,
+				 .unreadableDate, .missingSerialField, .httpStatus, .emptyResponse:
+				cause = "\(c.appName) could not verify your license: \(diagnosis.server.text.lowercased ())"
+			default:
+				cause = "\(c.appName) could not verify your license because the licensing server is unreachable."
+		}
+
+		// Perché la copia locale non è bastata a coprirlo. Il vecchio testo dava sempre
+		// la colpa ai 30 giorni, anche quando il grace period non c'entrava: su un trial
+		// il controllo online è obbligatorio a ogni avvio, e nessuno lo diceva.
+		let reason: String
+		switch diagnosis.local {
+			case .graceExpired:
+				reason = "It has been more than \(c.graceDays) days since the last successful check."
+			case .notPerpetual:
+				reason = "Trial licenses are verified online every time the app starts."
+			case .validationCodeMismatch, .emptyMachId:
+				reason = "This license could not be matched to this Mac offline."
+			case .noValidationCode, .neverChecked:
+				reason = "This license has never been confirmed on this Mac."
+			case .some (let code):
+				reason = code.text
+			case nil:
+				reason = ""
+		}
+
+		// Cosa può fare l'utente: mandarlo a controllare il firewall quando il server
+		// risponde e basta è tempo suo sprecato.
+		let advice: String
+		switch diagnosis.server {
+			case .validatorMismatch, .malformedResponse, .htmlErrorPage,
+				 .unreadableDate, .missingSerialField, .httpStatus, .emptyResponse:
+				advice = "This is a problem on our side. Please try again later, or contact support with the code below."
+			default:
+				advice = "Check your internet connection, firewall or VPN, then try again."
+		}
+
+		return [cause, reason, advice, "Error code: \(diagnosis.display)"]
+			.filter { !$0.isEmpty }
+			.joined (separator: "\n\n")
 	}
 
 
@@ -395,13 +501,16 @@ public enum UMLicensing {
 
 		do {
 			try await c.makeServer ().activate (license)
-		} catch LicenseServer.ServerError.unreachable {
+		} catch let LicenseServer.ServerError.unreachable (code) {
+			Diagnostics.diagnose (code, "activate", stateSummary (license, c))
 			Alert.ok ("Cannot Reach the Licensing Server",
 					  """
 					  \(c.appName) could not activate your serial number because the licensing \
-					  server is unreachable.
+					  server is unreachable. \(code.text)
 
 					  Check your internet connection, firewall or VPN, then try again.
+
+					  Error code: \(code.display)
 					  """)
 			return nil
 		} catch let LicenseServer.ServerError.rejected (message) {
@@ -416,8 +525,22 @@ public enum UMLicensing {
 			}
 			Alert.ok ("License", formatServerMessage (message))
 			return nil
+		} catch let LicenseServer.ServerError.notValidated (code) {
+			Diagnostics.diagnose (code, "activate", stateSummary (license, c))
+			Alert.ok ("Licensing Server Problem",
+					  """
+					  \(code.text)
+
+					  This is a problem on our side. Please try again later, or contact support \
+					  with the code below.
+
+					  Error code: \(code.display)
+					  """)
+			return nil
 		} catch {
-			Alert.ok ("License", Strings.notValidated.value)
+			let code = UMLicensingCode.transport (error)
+			Diagnostics.diagnose (code, "activate", "\(error)")
+			Alert.ok ("License", "\(Strings.notValidated.value)\n\nError code: \(code.display)")
 			return nil
 		}
 
@@ -464,8 +587,9 @@ public enum UMLicensing {
 
 	private enum Confirmation {
 		case ok (LicenseData)
-		/// Server irraggiungibile. `tolerated` dice se il grace period copre la cosa.
-		case offline (tolerated: Bool)
+		/// Il server non ha risposto in modo utilizzabile. `tolerated` dice se la copia
+		/// locale copre la cosa; `diagnosis` porta i codici da mostrare quando non copre.
+		case offline (tolerated: Bool, diagnosis: UMLicensingDiagnosis)
 		case rejected (String)
 	}
 
@@ -531,13 +655,39 @@ public enum UMLicensing {
 			}
 			return .ok (updated)
 
-		} catch LicenseServer.ServerError.unreachable {
-			return .offline (tolerated: isLocallyValid (license, c) && withinGrace (c, allowNeverChecked: true))
+		} catch let LicenseServer.ServerError.unreachable (code) {
+			return offlineOutcome (license, c, server: code)
+		} catch let LicenseServer.ServerError.notValidated (code) {
+			// Il server ha risposto: non è un problema di rete, ma di protocollo. Il
+			// grace period vale lo stesso — non è l'utente ad avere sbagliato qualcosa.
+			return offlineOutcome (license, c, server: code)
 		} catch let LicenseServer.ServerError.rejected (message) {
 			return .rejected (message)
 		} catch {
-			return .offline (tolerated: isLocallyValid (license, c) && withinGrace (c, allowNeverChecked: true))
+			return offlineOutcome (license, c, server: UMLicensingCode.transport (error))
 		}
+	}
+
+
+	/// Decide se la licenza salvata basta a coprire un server che non ha risposto, e
+	/// con quali codici spiegarlo se non basta.
+	private static func offlineOutcome (_ license: LicenseData,
+										_ c: Context,
+										server: UMLicensingCode) -> Confirmation {
+
+		let localReason = localBlockReason (license, c)
+		let graceReason = localReason == nil ? graceBlockReason (c, allowNeverChecked: true) : nil
+		let blocking    = localReason ?? graceReason
+
+		var diagnosis = UMLicensingDiagnosis (server: server, local: blocking)
+		diagnosis.detail = stateSummary (license, c)
+
+		if let blocking {
+			Diagnostics.diagnose (blocking, "confirm", diagnosis.detail)
+		}
+		Diagnostics.log ("esito offline: \(diagnosis.logLine)")
+
+		return .offline (tolerated: blocking == nil, diagnosis: diagnosis)
 	}
 
 
@@ -546,18 +696,39 @@ public enum UMLicensing {
 	/// La licenza salvata è integra, non scaduta, e il codice di validazione locale
 	/// corrisponde a questa macchina.
 	private static func isLocallyValid (_ license: LicenseData, _ c: Context) -> Bool {
-		guard license.isRegistered,
-			  !license.isExpired,
-			  c.isSerialValid (license.serialId),
-			  license.type.isPerpetual else {
-			return false
-		}
+		localBlockReason (license, c) == nil
+	}
 
-		guard let saved = UMLicenseValidationCode.load () else { return false }
+
+	/// Perché la licenza salvata non è utilizzabile senza server. `nil` se lo è.
+	///
+	/// È la stessa catena di controlli di prima, spezzata in `guard` distinti per poter
+	/// dire *quale* è saltato: erano tutti indistinguibili dietro un unico `false`, e
+	/// l'utente si vedeva incolpare la rete anche quando la rete non c'entrava niente.
+	private static func localBlockReason (_ license: LicenseData, _ c: Context) -> UMLicensingCode? {
+
+		guard license.isRegistered else {
+			// `LicenseStore.load()` azzera il seriale quando la firma locale non torna:
+			// "manomessa" e "assente" arrivano qui identiche, le separa il messaggio.
+			return license.errorMessage == Strings.invalidLicense.value
+				? .localValidatorMismatch
+				: .noLocalLicense
+		}
+		guard !license.isExpired                    else { return .licenseExpired }
+		guard c.isSerialValid (license.serialId)    else { return .serialFailsLocalCheck }
+		guard license.type.isPerpetual              else { return .notPerpetual }
+		guard let saved = UMLicenseValidationCode.load () else { return .noValidationCode }
+
 		let expected = UMLicenseValidationCode (appId: license.appId,
 												serialNumber: license.serialId,
 												machineID: license.machId)
-		return saved.validationCode == expected.expectedCode ()
+		guard saved.validationCode == expected.expectedCode () else {
+			// Il codice è firmato sul machId: se il MAC non è più leggibile (niente
+			// interfaccia Ethernet primaria: Mac senza rete cablata, VPN che riordina
+			// le interfacce) non torna più niente, ed è un caso a sé.
+			return c.machId.isEmpty ? .emptyMachId : .validationCodeMismatch
+		}
+		return nil
 	}
 
 
@@ -568,11 +739,45 @@ public enum UMLicensing {
 	///   concediamo comunque il beneficio del dubbio invece di bloccare un cliente
 	///   che ha sempre funzionato.
 	private static func withinGrace (_ c: Context, allowNeverChecked: Bool = false) -> Bool {
+		graceBlockReason (c, allowNeverChecked: allowNeverChecked) == nil
+	}
+
+
+	/// Perché la finestra offline non copre. `nil` se copre.
+	private static func graceBlockReason (_ c: Context, allowNeverChecked: Bool) -> UMLicensingCode? {
 		guard let last = c.store.lastServerCheck else {
-			if allowNeverChecked { c.store.lastServerCheck = Date () }
-			return allowNeverChecked
+			if allowNeverChecked {
+				c.store.lastServerCheck = Date ()
+				return nil
+			}
+			return .neverChecked
 		}
-		return Compat.du_getDeltaDate (firstDate: last, secondDate: Date ()) <= c.graceDays
+
+		let days = Compat.du_getDeltaDate (firstDate: last, secondDate: Date ())
+		guard days > c.graceDays else { return nil }
+
+		Diagnostics.log ("grace scaduto: \(days) giorni dall'ultimo controllo (limite \(c.graceDays))")
+		return .graceExpired
+	}
+
+
+	/// Fotografia dello stato locale, per il log e per `diagnosticReport`.
+	private static func stateSummary (_ license: LicenseData, _ c: Context) -> String {
+		let last = c.store.lastServerCheck
+		let days = last.map { Compat.du_getDeltaDate (firstDate: $0, secondDate: Date ()) }
+
+		return [
+			"serial=\(license.serialId.isEmpty ? "—" : license.serialId)",
+			"type=\(license.type.displayName.isEmpty ? "—" : license.type.displayName)",
+			"perpetual=\(license.type.isPerpetual)",
+			"expired=\(license.isExpired)",
+			"exp=\(Compat.du_getDateString (license.expDate))",
+			"machId(store)=\(license.machId.isEmpty ? "—" : license.machId)",
+			"machId(mac)=\(c.machId.isEmpty ? "—" : c.machId)",
+			"validationCode=\(UMLicenseValidationCode.load () == nil ? "assente" : "presente")",
+			"lastCheck=\(last.map { Compat.du_getDateString ($0) } ?? "mai")",
+			"giorni=\(days.map (String.init) ?? "—")/\(c.graceDays)",
+		].joined (separator: " ")
 	}
 
 
