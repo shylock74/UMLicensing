@@ -310,7 +310,7 @@ the UMOmniaFramework sources, not guessed:
 | `netU_getMacAddress` | lowercase hex, `:` separated, **last** primary interface | fixed — took the first |
 | `getUnlockCode` | no MD5 around the concatenation | fixed — had one |
 | `racId_getNumbersToLength` | `""` when the source has no digits | fixed — returned zeros |
-| Server URL | `https://www.alexraccuglia.net/license/license.php` | fixed — `www.` was missing |
+| Server URL | `https://www.alexraccuglia.net/license/license.asp` | fixed — `www.` was missing |
 | Validator secret | `l1c3n53!` | matches |
 | Unlock secret | `53r141` | matches |
 | `UMLicenseValidationCode` secret and JSON shape | `1òàùéP*'ì1c3n53!`, same key `UMLVC` | matches |
