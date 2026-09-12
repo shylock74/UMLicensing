@@ -821,3 +821,80 @@ final class DiagnosticCodeTests: XCTestCase {
 		XCTAssertTrue (serverOnly.logLine.contains ("HTTP"))
 	}
 }
+
+
+// MARK: - Prefisso dell'app cambiato
+
+/// Quando un'app cambia `appShortId` (LX20 → LX30), il seriale della versione precedente
+/// resta nei preferences. Deve smettere di valere come licenza: prima passava, perché
+/// `isRegistered` non guarda il prefisso e il server conferma volentieri un seriale che
+/// ha venduto davvero.
+@MainActor
+final class StoredSerialPrefixTests: XCTestCase {
+
+	private func context (_ appShortId: String, previous: String = "") -> UMLicensing.Context {
+		UMLicensing.Context (appId:                 "media.ulti.TEST",
+							 appName:               "Test",
+							 appShortId:            appShortId,
+							 acceptedApps:          [appShortId],
+							 previousVersionPrefix: previous,
+							 purchaseUrl:           "",
+							 downloadAppUrl:        "",
+							 logoImageUrl:          "",
+							 logoImageAlt:          "",
+							 backgroundRGB:         "",
+							 accentRGB:             "",
+							 mailBody:              "",
+							 trialExpDays:          7,
+							 graceDays:             30,
+							 serverUrl:             nil)
+	}
+
+
+	private func stored (_ serialId: String) -> LicenseData {
+		var license = LicenseData ()
+		license.appId    = "media.ulti.TEST"
+		license.serialId = serialId
+		license.licType  = licenseType.full.name
+		return license
+	}
+
+
+	func testSerialOfTheOldPrefixStopsCounting () {
+		let old = LicenseValidator.generateSN (appShortId: "LX20", type: .full, progressiveN: 42)
+
+		let usable = UMLicensing.usableStoredLicense (stored (old), context ("LX30", previous: "LX10"))
+
+		XCTAssertFalse (usable.isRegistered)
+		XCTAssertEqual (usable.serialId, "")
+	}
+
+
+	func testSerialOfTheCurrentPrefixIsKept () {
+		let current = LicenseValidator.generateSN (appShortId: "LX30", type: .full, progressiveN: 7)
+
+		let usable = UMLicensing.usableStoredLicense (stored (current), context ("LX30", previous: "LX10"))
+
+		XCTAssertEqual (usable.serialId, current)
+	}
+
+
+	/// `previousVersionPrefix` esiste per non buttare fuori i clienti storici: quello
+	/// dichiarato resta valido, ed è l'unico oltre a `acceptedApps`.
+	func testPreviousVersionPrefixIsStillAccepted () {
+		let legacy = LicenseValidator.generateSN (appShortId: "LX10", type: .full, progressiveN: 3)
+
+		let usable = UMLicensing.usableStoredLicense (stored (legacy), context ("LX30", previous: "LX10"))
+
+		XCTAssertEqual (usable.serialId, legacy)
+	}
+
+
+	/// Nessuna licenza salvata: non c'è niente da scartare, e il flusso normale deve
+	/// poter provare il recupero dal server.
+	func testEmptyStoreIsLeftUntouched () {
+		let usable = UMLicensing.usableStoredLicense (LicenseData (), context ("LX30"))
+
+		XCTAssertFalse (usable.isRegistered)
+	}
+}

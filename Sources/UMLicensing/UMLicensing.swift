@@ -197,6 +197,8 @@ public enum UMLicensing {
 
 		Diagnostics.log ("avvio: \(stateSummary (license, c))")
 
+		license = usableStoredLicense (license, c)
+
 		// Percorso veloce: licenza perpetua già confermata dal server di recente.
 		// Nessuna rete, nessuna attesa all'avvio; il rinnovo del grace period viene
 		// tentato in sottofondo senza mai mostrare nulla all'utente.
@@ -262,6 +264,37 @@ public enum UMLicensing {
 					license = LicenseData ()
 			}
 		}
+	}
+
+
+	/// La licenza da cui partire, dato quello che c'è nei preferences.
+	///
+	/// Restituisce una licenza vuota quando il seriale salvato non appartiene a questa
+	/// app: prefisso di una versione precedente non più accettata, o licenza di un altro
+	/// prodotto rimasta nei preferences.
+	///
+	/// Senza questo filtro passava lo stesso. `isRegistered` guarda solo che il seriale
+	/// ci sia e che la firma locale torni, mai il prefisso: il flusso saltava `acquire()`
+	/// e andava dritto a `confirm()`, che chiedeva conferma al server — dove quel seriale
+	/// esiste davvero, perché è stato venduto. L'app si sbloccava con una licenza che
+	/// aveva appena smesso di accettare, e il controllo sul prefisso scattava solo quando
+	/// il server non rispondeva.
+	///
+	/// La licenza **non** viene cancellata dai preferences: se il prefisso torna fra gli
+	/// `acceptedApps` deve riprendere a funzionare da sola, senza far reinserire niente.
+	static func usableStoredLicense (_ license: LicenseData, _ c: Context) -> LicenseData {
+		guard license.isRegistered, !c.isSerialValid (license.serialId) else { return license }
+
+		Diagnostics.diagnose (.serialFailsLocalCheck,
+							  "avvio",
+							  "\(license.serialId) non è di questa app "
+							  + "(accettati: \(c.acceptedApps.joined (separator: ", "))"
+							  + (c.previousVersionPrefix.isEmpty
+								 ? ""
+								 : ", versione precedente: \(c.previousVersionPrefix)")
+							  + ") — resta nei preferences ma non vale come licenza")
+
+		return LicenseData ()
 	}
 
 
