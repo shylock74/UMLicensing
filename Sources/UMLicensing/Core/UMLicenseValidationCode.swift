@@ -45,18 +45,32 @@ public struct UMLicenseValidationCode: Codable, Sendable, Equatable {
 	public func save (defaults: UserDefaults = .standard) {
 		var copy = self
 		copy.validationCode = expectedCode ()
-		guard let json = try? JSONEncoder ().encode (copy) else { return }
+
+		Diagnostics.trace ("validationCode.save: \(copy.validationCode) "
+						   + "(serial \(serialNumber), machId \(machineID))")
+
+		guard let json = try? JSONEncoder ().encode (copy) else {
+			Diagnostics.trace ("validationCode.save: codifica JSON fallita, non salvo niente")
+			return
+		}
 		defaults.set (String (decoding: json, as: UTF8.self), forKey: UMLicenseValidationCode.defaultsKey)
 	}
 
 
 	public static func load (defaults: UserDefaults = .standard) -> UMLicenseValidationCode? {
-		guard let s = defaults.string (forKey: defaultsKey), !s.isEmpty else { return nil }
-		return try? JSONDecoder ().decode (UMLicenseValidationCode.self, from: Data (s.utf8))
+		guard let s = defaults.string (forKey: defaultsKey), !s.isEmpty else {
+			Diagnostics.trace ("validationCode.load: assente")
+			return nil
+		}
+
+		let decoded = try? JSONDecoder ().decode (UMLicenseValidationCode.self, from: Data (s.utf8))
+		Diagnostics.trace ("validationCode.load: \(decoded?.validationCode ?? "illeggibile")")
+		return decoded
 	}
 
 
 	static func clear (defaults: UserDefaults = .standard) {
+		Diagnostics.trace ("validationCode.clear: rimosso")
 		defaults.removeObject (forKey: defaultsKey)
 	}
 }

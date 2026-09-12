@@ -68,7 +68,16 @@ private final class WindowHost<R: Sendable>: NSObject, NSWindowDelegate {
 		window.center ()
 		window.level            = .floating
 
+		// Senza questo la finestra nasce nella Space dell'app e ci resta: chi sta in un
+		// altro desktop, o in un'app a tutto schermo (Xcode, un player, Keynote), non vede
+		// comparire niente e l'app sembra bloccata all'avvio. `NSApp.activate` non basta,
+		// perché attiva l'app senza spostare la finestra. `.fullScreenAuxiliary` la lascia
+		// apparire *sopra* una finestra a tutto schermo invece di forzarne l'uscita.
+		window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+
 		self.window = window
+
+		Diagnostics.trace ("finestra \"\(title)\" \(Int (size.width))x\(Int (size.height)): la mostro")
 
 		NSApp.activate (ignoringOtherApps: true)
 		window.makeKeyAndOrderFront (nil)
@@ -78,6 +87,8 @@ private final class WindowHost<R: Sendable>: NSObject, NSWindowDelegate {
 	func finish (_ result: R) {
 		guard let continuation else { return }
 		self.continuation = nil
+
+		Diagnostics.trace ("finestra \"\(window?.title ?? "?")\": chiusa con \(result)")
 
 		window?.delegate = nil
 		window?.close ()

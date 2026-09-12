@@ -53,6 +53,7 @@ struct LicenseStore: @unchecked Sendable {
 		data.serialId = defaults.string (forKey: key ("serialId")) ?? ""
 
 		guard !data.appId.isEmpty, !data.serialId.isEmpty else {
+			Diagnostics.trace ("store.load: nessuna licenza nei preferences (chiave \"\(key ("serialId"))\")")
 			data.errorMessage = Strings.notRegistered.value
 			return data
 		}
@@ -73,12 +74,22 @@ struct LicenseStore: @unchecked Sendable {
 			// autentica: la accettiamo e riscriviamo subito la firma giusta, così il
 			// giro successivo passa dal percorso normale.
 			guard stored == LicenseValidator.isoValidator (for: data) else {
+				Diagnostics.trace ("store.load: firma locale non valida per \(data.serialId) — "
+								   + "salvata \"\(stored)\", attesa \"\(LicenseValidator.validator (for: data))\"")
 				data.errorMessage = Strings.invalidLicense.value
 				data.serialId = ""
 				return data
 			}
+
+			Diagnostics.trace ("store.load: firma in formato vecchio, la riscrivo aggiornata")
 			save (data)
 		}
+
+		Diagnostics.trace ("store.load: \(data.serialId) type=\(data.licType) "
+						   + "machId=\(data.machId.isEmpty ? "—" : data.machId) "
+						   + "reg=\(Compat.du_getDateString (data.regDate)) "
+						   + "exp=\(Compat.du_getDateString (data.expDate)) "
+						   + "user=\(data.username) email=\(data.email) password=\(data.password)")
 		return data
 	}
 
@@ -88,6 +99,10 @@ struct LicenseStore: @unchecked Sendable {
 	/// Replica `License.saveLicense()`. Con `invalidate` scrive un validator che non
 	/// corrisponde ai dati, rendendo la licenza illeggibile senza cancellarla.
 	func save (_ data: LicenseData, invalidate: Bool = false) {
+		Diagnostics.trace ("store.save: \(data.serialId) machId=\(data.machId.isEmpty ? "—" : data.machId) "
+						   + "exp=\(Compat.du_getDateString (data.expDate))"
+						   + (invalidate ? " — scritta con firma invalidata" : ""))
+
 		defaults.set (data.appId,    forKey: key ("appId"))
 		defaults.set (data.serialId, forKey: key ("serialId"))
 		defaults.set (data.machId,   forKey: key ("machId"))
@@ -110,6 +125,8 @@ struct LicenseStore: @unchecked Sendable {
 	/// la licenza in realtà restava nei preferences. Qui uso le chiavi giuste, così
 	/// la rimozione funziona davvero. Se dipendevi da quel comportamento, dimmelo.
 	func clear () {
+		Diagnostics.trace ("store.clear: cancello la licenza dai preferences")
+
 		for field in ["appId", "serialId", "machId", "machId2", "password",
 					  "username", "email", "regDate", "expDate", "licType", "validator"] {
 			defaults.removeObject (forKey: key (field))
@@ -139,6 +156,9 @@ struct LicenseStore: @unchecked Sendable {
 	/// Ultima volta che il server ha confermato la licenza. Serve al grace period offline.
 	var lastServerCheck: Date? {
 		get { defaults.object (forKey: key ("lastServerCheck")) as? Date }
-		nonmutating set { defaults.set (newValue, forKey: key ("lastServerCheck")) }
+		nonmutating set {
+			Diagnostics.trace ("store.lastServerCheck = \(newValue.map { Compat.du_getDateString ($0) } ?? "mai")")
+			defaults.set (newValue, forKey: key ("lastServerCheck"))
+		}
 	}
 }

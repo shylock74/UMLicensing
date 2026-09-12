@@ -89,8 +89,15 @@ public enum UMLicensing {
 
 		License.configure (context)
 
+		Diagnostics.trace ("licensed(): appId=\(appId) appName=\(appName) appShortId=\(appShortId) "
+						   + "acceptedApps=\(context.acceptedApps) previousPrefix=\(previousVersionPrefix.isEmpty ? "—" : previousVersionPrefix) "
+						   + "trialExpDays=\(trialExpDays) graceDays=\(graceDays) "
+						   + "serverUrl=\(serverUrl ?? "predefinito")")
+
 		let result = await run (context)
 		License.licenseValidated = result
+
+		Diagnostics.trace ("licensed(): esito \(result)")
 		return result
 	}
 
@@ -194,6 +201,7 @@ public enum UMLicensing {
 		// Nessuna rete, nessuna attesa all'avvio; il rinnovo del grace period viene
 		// tentato in sottofondo senza mai mostrare nulla all'utente.
 		if isLocallyValid (license, c), withinGrace (c) {
+			Diagnostics.trace ("run: percorso veloce — licenza locale valida e dentro il grace period")
 			refreshInBackground (license, c)
 			return true
 		}
@@ -201,6 +209,7 @@ public enum UMLicensing {
 		// Nessuna licenza in locale: forse questa macchina è già registrata sul server
 		// (reinstallazione, o utente che ha cancellato i preferences).
 		if !license.isRegistered {
+			Diagnostics.trace ("run: nessuna licenza in locale, provo il recupero dal server")
 			if let recovered = await recoverFromServer (c) {
 				license = recovered
 			}
@@ -215,7 +224,11 @@ public enum UMLicensing {
 			var justAcquired = false
 
 			if !license.isRegistered || license.isExpired {
+				Diagnostics.trace ("run: serve una licenza "
+								   + "(registrata=\(license.isRegistered) scaduta=\(license.isExpired))")
+
 				guard let acquired = await acquire (c, startingFromSerial: license.isExpired) else {
+					Diagnostics.trace ("run: l'utente ha rinunciato, esco con false")
 					return false
 				}
 				license = acquired
@@ -224,6 +237,7 @@ public enum UMLicensing {
 
 			switch await confirm (license, c) {
 				case .ok (let confirmed):
+					Diagnostics.trace ("run: confermata dal server, serialId=\(confirmed.serialId)")
 					markValidated (confirmed, c)
 					if justAcquired {
 						announceActivation (confirmed, appName: c.appName)
@@ -231,6 +245,7 @@ public enum UMLicensing {
 					return true
 
 				case .offline (let tolerated, let diagnosis):
+					Diagnostics.trace ("run: offline, tollerato=\(tolerated) — \(diagnosis.logLine)")
 					guard tolerated else {
 						Alert.ok (offlineAlertTitle (diagnosis),
 								  offlineAlertBody (diagnosis, c))
@@ -240,6 +255,7 @@ public enum UMLicensing {
 					return true
 
 				case .rejected (let message):
+					Diagnostics.trace ("run: rifiutata dal server — \"\(message)\", azzero la licenza locale")
 					Alert.ok ("License", formatServerMessage (message))
 					c.store.clear ()
 					UMLicenseValidationCode.clear ()
@@ -327,8 +343,11 @@ public enum UMLicensing {
 		guard let remote = try? await server.getDataByMachId (appId: c.appId, machId: c.machId),
 			  !remote.serialId.isEmpty,
 			  c.isSerialValid (remote.serialId) else {
+			Diagnostics.trace ("recoverFromServer: nessuna licenza recuperabile per machId=\(c.machId)")
 			return nil
 		}
+
+		Diagnostics.trace ("recoverFromServer: recuperato serialId=\(remote.serialId)")
 
 		var license = remote.license
 		license.machId = c.machId
@@ -355,7 +374,9 @@ public enum UMLicensing {
 			if skipChoice {
 				choice = .insertSerial
 				skipChoice = false
+				Diagnostics.trace ("acquire: salto la scelta, vado dritto all'inserimento del seriale")
 			} else {
+				Diagnostics.trace ("acquire: mostro la schermata di scelta")
 				choice = await LicenseWindow.show (title: c.appName,
 												   size: CGSize (width: 460, height: 340),
 												   closed: ChooseOutcome.quit) { finish in
@@ -365,6 +386,8 @@ public enum UMLicensing {
 									   finish: finish)
 				}
 			}
+
+			Diagnostics.trace ("acquire: scelta \(choice)")
 
 			switch choice {
 				case .quit:
@@ -378,6 +401,7 @@ public enum UMLicensing {
 					}
 
 				case .insertSerial:
+					Diagnostics.trace ("acquire: mostro la schermata di inserimento seriale")
 					let outcome = await LicenseWindow.show (title: c.appName,
 														   size: CGSize (width: 460, height: 300),
 														   closed: SerialOutcome.quit) { finish in
@@ -391,11 +415,14 @@ public enum UMLicensing {
 
 					switch outcome {
 						case .quit:
+							Diagnostics.trace ("acquire: finestra seriale chiusa senza inserire niente")
 							return nil
 						case .serial (let sn):
+							Diagnostics.trace ("acquire: seriale inserito \(sn)")
 							if let activated = await activate (sn, c) {
 								return activated
 							}
+							Diagnostics.trace ("acquire: attivazione non riuscita, torno alla scelta")
 					}
 			}
 		}
@@ -405,6 +432,8 @@ public enum UMLicensing {
 	/// Emette un seriale di prova e lo spedisce per email. `false` se l'utente rinuncia.
 	private static func issueTrial (_ c: Context) async -> Bool {
 
+		Diagnostics.trace ("issueTrial: mostro la schermata di iscrizione al trial")
+
 		let signupResult: TrialSignup? = await LicenseWindow.show (title: c.appName,
 																   size: CGSize (width: 460, height: 320),
 																   closed: nil) { finish in
@@ -413,12 +442,19 @@ public enum UMLicensing {
 							 finish: finish)
 		}
 
-		guard let signup = signupResult else { return false }
+		guard let signup = signupResult else {
+			Diagnostics.trace ("issueTrial: iscrizione annullata")
+			return false
+		}
+
+		Diagnostics.trace ("issueTrial: iscrizione di \(signup.username) <\(signup.email)>")
 
 		let serialId = LicenseValidator.generateSN (appShortId: c.appShortId,
 													type: .trial,
 													progressiveN: Int (arc4random_uniform (100_000_000)))
 		let expDate = Compat.du_getDatePlusDays (date: Date (), days: c.trialExpDays)
+
+		Diagnostics.trace ("issueTrial: generato \(serialId), scadenza \(Compat.du_getDateString (expDate))")
 
 		do {
 			try await c.makeServer ().uploadNewLicense (appId: c.appId,
@@ -428,6 +464,7 @@ public enum UMLicensing {
 														username: signup.username,
 														email: signup.email)
 		} catch {
+			Diagnostics.trace ("issueTrial: caricamento sul server fallito (\(error))")
 			Alert.ok ("Cannot Create the Trial License",
 					  """
 					  \(c.appName) could not reach the licensing server to create your trial.
@@ -458,6 +495,8 @@ public enum UMLicensing {
 											  subject: "\(c.appName) Trial Serial Number",
 											  htmlBody: body)
 
+		Diagnostics.trace ("issueTrial: email a \(signup.email) \(sent ? "spedita" : "NON spedita")")
+
 		if sent {
 			Alert.ok ("Trial Serial Number Sent",
 					  """
@@ -480,7 +519,10 @@ public enum UMLicensing {
 	/// Attiva un seriale su questa macchina. `nil` se l'attivazione non riesce.
 	private static func activate (_ serialId: String, _ c: Context) async -> LicenseData? {
 
+		Diagnostics.trace ("activate: verifico in locale \(serialId)")
+
 		guard c.isSerialValid (serialId) else {
+			Diagnostics.trace ("activate: \(serialId) non passa il controllo locale (prefisso o cifre)")
 			Alert.ok (Strings.invalidSN.value, Strings.checkIfYouTypedCorrectly.value)
 			return nil
 		}
@@ -520,6 +562,7 @@ public enum UMLicensing {
 			// `machId2` (license.swift:551) e quindi il valore salvato non è mai stato
 			// quello vero. Se l'attivazione che il server ha in archivio è di questa
 			// macchina, non c'è niente da riattivare: la adottiamo e basta.
+			Diagnostics.trace ("activate: rifiutata (\"\(message)\"), controllo se è già attiva su questo Mac")
 			if let adopted = await adoptExistingActivation (license, c) {
 				return adopted
 			}
@@ -544,6 +587,7 @@ public enum UMLicensing {
 			return nil
 		}
 
+		Diagnostics.trace ("activate: attivazione completata, salvo la licenza in locale")
 		c.store.save (license)
 		c.store.lastServerCheck = Date ()
 		return license
@@ -559,6 +603,7 @@ public enum UMLicensing {
 			  let remote = try? await c.makeServer ().getData (appId: license.appId,
 															   serialId: license.serialId),
 			  Compat.machIdMatches (remote.machId, c.machId) else {
+			Diagnostics.trace ("adoptExistingActivation: l'attivazione sul server non è di questo Mac")
 			return nil
 		}
 
@@ -575,8 +620,12 @@ public enum UMLicensing {
 		if adopted.licType.isEmpty  { adopted.licType  = license.licType }
 
 		// Una licenza scaduta resta scaduta: il rifiuto del server poteva essere quello.
-		guard !adopted.isExpired else { return nil }
+		guard !adopted.isExpired else {
+			Diagnostics.trace ("adoptExistingActivation: l'attivazione trovata è scaduta")
+			return nil
+		}
 
+		Diagnostics.trace ("adoptExistingActivation: adotto l'attivazione già presente sul server")
 		c.store.save (adopted)
 		c.store.lastServerCheck = Date ()
 		return adopted
@@ -598,9 +647,12 @@ public enum UMLicensing {
 
 		// Licenza perpetua già verificata di recente: nessun motivo di attendere la rete.
 		if isLocallyValid (license, c), withinGrace (c) {
+			Diagnostics.trace ("confirm: copia locale valida e recente, nessuna attesa della rete")
 			refreshInBackground (license, c)
 			return .ok (license)
 		}
+
+		Diagnostics.trace ("confirm: chiedo conferma al server per \(license.serialId)")
 
 		do {
 			let remote = try await c.makeServer ().getData (appId: license.appId,
@@ -620,6 +672,8 @@ public enum UMLicensing {
 			if !remote.machId.isEmpty,
 			   !Compat.machIdMatches (remote.machId, c.machId),
 			   !Compat.machIdMatches (remote.machId, license.machId) {
+				Diagnostics.trace ("confirm: il server lega il seriale a \(remote.machId), "
+								   + "questo Mac è \(c.machId) — rifiutata")
 				return .rejected (Strings.serialAlreadyActivated.value)
 			}
 
@@ -651,8 +705,12 @@ public enum UMLicensing {
 			// La scadenza vale solo per le licenze a termine, e solo se la data viene
 			// davvero dal server.
 			if remote.expDate != nil, updated.isExpired {
+				Diagnostics.trace ("confirm: scaduta secondo il server "
+								   + "(\(Compat.du_getDateString (updated.expDate)))")
 				return .rejected ("Your \(updated.type.displayName) license has expired.")
 			}
+
+			Diagnostics.trace ("confirm: confermata dal server")
 			return .ok (updated)
 
 		} catch let LicenseServer.ServerError.unreachable (code) {
@@ -662,6 +720,7 @@ public enum UMLicensing {
 			// grace period vale lo stesso — non è l'utente ad avere sbagliato qualcosa.
 			return offlineOutcome (license, c, server: code)
 		} catch let LicenseServer.ServerError.rejected (message) {
+			Diagnostics.trace ("confirm: rifiutata dal server — \"\(message)\"")
 			return .rejected (message)
 		} catch {
 			return offlineOutcome (license, c, server: UMLicensingCode.transport (error))
@@ -696,7 +755,9 @@ public enum UMLicensing {
 	/// La licenza salvata è integra, non scaduta, e il codice di validazione locale
 	/// corrisponde a questa macchina.
 	private static func isLocallyValid (_ license: LicenseData, _ c: Context) -> Bool {
-		localBlockReason (license, c) == nil
+		let reason = localBlockReason (license, c)
+		Diagnostics.trace ("isLocallyValid: \(reason == nil ? "sì" : "no — \(reason!.display) \(reason!.text)")")
+		return reason == nil
 	}
 
 
@@ -739,7 +800,9 @@ public enum UMLicensing {
 	///   concediamo comunque il beneficio del dubbio invece di bloccare un cliente
 	///   che ha sempre funzionato.
 	private static func withinGrace (_ c: Context, allowNeverChecked: Bool = false) -> Bool {
-		graceBlockReason (c, allowNeverChecked: allowNeverChecked) == nil
+		let reason = graceBlockReason (c, allowNeverChecked: allowNeverChecked)
+		Diagnostics.trace ("withinGrace: \(reason == nil ? "sì" : "no — \(reason!.display) \(reason!.text)")")
+		return reason == nil
 	}
 
 
@@ -790,15 +853,24 @@ public enum UMLicensing {
 		let appId  = license.appId
 		let serial = license.serialId
 
+		Diagnostics.trace ("refreshInBackground: rinnovo il grace period in sottofondo per \(serial)")
+
 		Task.detached (priority: .background) {
 			guard let remote = try? await server.getData (appId: appId, serialId: serial),
-				  remote.serialId == serial else { return }
+				  remote.serialId == serial else {
+				Diagnostics.trace ("refreshInBackground: rinnovo non riuscito, resta l'ultima data buona")
+				return
+			}
 			await MainActor.run { store.lastServerCheck = Date () }
+			Diagnostics.trace ("refreshInBackground: grace period rinnovato")
 		}
 	}
 
 
 	private static func markValidated (_ license: LicenseData, _ c: Context) {
+		Diagnostics.trace ("markValidated: firmo il codice di validazione per "
+						   + "\(license.serialId) su machId=\(license.machId)")
+
 		UMLicenseValidationCode (appId: license.appId,
 								 serialNumber: license.serialId,
 								 machineID: license.machId).save ()
@@ -810,6 +882,8 @@ public enum UMLicensing {
 	/// Chiamata solo dopo `acquire()`: vedi il commento in `run()` sul perché non
 	/// vada mostrata a chi la licenza ce l'aveva già.
 	private static func announceActivation (_ license: LicenseData, appName: String) {
+		Diagnostics.trace ("announceActivation: tipo \(license.type.name)")
+
 		if license.type == .trial {
 			let dateStr = Compat.du_formatDate (license.expDate, formatter: "dd MMMM yyyy")
 			Alert.ok ("Trial License Activated",

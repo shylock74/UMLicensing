@@ -317,6 +317,37 @@ the UMOmniaFramework sources, not guessed:
 
 The server URL is the legacy `License.serverUrl` run through `Splhash.getPlain`.
 
+### Fixed User-Agent
+
+Requests go out as `UMLicensing/1.0`, not as the default URLSession agent
+(`<AppName>/<version> CFNetwork/… Darwin/…`). Aruba's application firewall answers
+`HTTP 999 — AW Special Error` when the app name contains a word it considers suspicious:
+"Disc Scanner" was blocked on account of "scanner", and the app saw it as an unreachable
+server (`UML-E108`). A fixed agent keeps the product name out of the request, so no app
+can lock itself out because of what it is called.
+
+## Diagnostics and logging
+
+Three levels, from quietest to loudest:
+
+| | When it prints | What it covers |
+|---|---|---|
+| `Diagnostics.diagnose` | always, any build | one line per `UML-Exxx`, the code a user can read out over the phone |
+| `Diagnostics.log` | Debug builds, or when the flag is on | server exchange, raw responses, offline reasoning |
+| `Diagnostics.trace` | Debug builds only — compiled out of Release | every step: preferences read and written, each HTTP call and its result, parsed license fields, windows shown and how they were dismissed, validation-code signing |
+
+In a Debug build everything is on with nothing to configure. In Release, turn the middle
+level on with `UMLicensing.verboseLogging = true`, `UMLICENSING_DEBUG=1`, or
+`defaults write <bundle-id> UMLicensing.debug -bool YES`; `trace` does not exist there at
+all, so its cost is zero.
+
+Output goes to `os.Logger` (subsystem `media.ulti.UMLicensing`) **and** stdout, flushed
+line by line — a buffered stdout would swallow exactly the lines you need when the app
+blocks or terminates.
+
+Debug traces print license fields as they are, raw server responses included: they only
+exist in builds that never reach users.
+
 ## Testing
 
 ```bash

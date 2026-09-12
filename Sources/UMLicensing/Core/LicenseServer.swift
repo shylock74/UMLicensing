@@ -19,6 +19,9 @@ actor LicenseServer {
 	/// non è detto che il redirect conservi la query string.
 	private static let defaultUrl = Obfuscated ([0x32, 0xB7, 0x6B, 0x07, 0xC1, 0x32, 0xCB, 0x16, 0x1A, 0xE6, 0x3B, 0x8E, 0x3B, 0xAF, 0x7A, 0x0F, 0xC0, 0x69, 0x87, 0x5A, 0x18, 0xF6, 0x20, 0xC9, 0x3B, 0xED, 0x71, 0x12, 0xC6, 0x27, 0x88, 0x50, 0x0E, 0xF4, 0x22, 0xD3, 0x3F, 0xEC, 0x73, 0x1E, 0xD1, 0x6D, 0x8A, 0x4A, 0x08, 0xBF, 0x2D, 0xD3, 0x2A])
 
+	/// Vedi `init`: fisso di proposito, non deriva dal nome dell'app.
+	static let userAgent = "UMLicensing/1.0"
+
 	private let baseUrl: String
 	private let session: URLSession
 
@@ -30,6 +33,15 @@ actor LicenseServer {
 		config.timeoutIntervalForRequest  = timeout
 		config.timeoutIntervalForResource = timeout
 		config.requestCachePolicy         = .reloadIgnoringLocalAndRemoteCacheData
+
+		// URLSession di suo manda `<NomeApp>/<versione> CFNetwork/... Darwin/...`, e il
+		// firewall applicativo di Aruba risponde `HTTP 999 - AW Special Error` quando il
+		// nome dell'app contiene una parola che considera sospetta: "Disc Scanner" veniva
+		// bloccata per via di "scanner", con la faccia di un server irraggiungibile.
+		// Uno User-Agent fisso toglie di mezzo il nome del prodotto: nessuna app può più
+		// autobloccarsi per come si chiama.
+		config.httpAdditionalHeaders = ["User-Agent": LicenseServer.userAgent]
+
 		self.session = URLSession (configuration: config)
 	}
 
@@ -93,14 +105,20 @@ actor LicenseServer {
 	/// Serve al pannello di inserimento: un seriale può essere formalmente valido —
 	/// le cifre di controllo tornano — e non essere mai stato venduto.
 	func lookUpSerial (appId: String, serialId: String) async -> SerialLookup {
+		Diagnostics.trace ("lookUpSerial: appId=\(appId) serialId=\(serialId)")
 		do {
 			let remote = try await getData (appId: appId, serialId: serialId)
-			return remote.serialId.isEmpty ? .notFound : .found
+			let outcome: SerialLookup = remote.serialId.isEmpty ? .notFound : .found
+			Diagnostics.trace ("lookUpSerial: esito \(outcome)")
+			return outcome
 		} catch let ServerError.rejected (message) {
 			// Solo il "non esiste" vale come assenza: ogni altro rifiuto (scaduta,
 			// già attivata) riguarda un seriale che nel database c'è eccome.
-			return LicenseServer.isUnknownSerialMessage (message) ? .notFound : .found
+			let outcome: SerialLookup = LicenseServer.isUnknownSerialMessage (message) ? .notFound : .found
+			Diagnostics.trace ("lookUpSerial: rifiutato \"\(message)\" -> \(outcome)")
+			return outcome
 		} catch {
+			Diagnostics.trace ("lookUpSerial: esito unknown (\(error))")
 			return .unknown
 		}
 	}
@@ -111,6 +129,7 @@ actor LicenseServer {
 	/// Recupera la licenza associata a questa macchina. È il primo passo dell'avvio:
 	/// permette a chi reinstalla l'app di ritrovare la licenza senza reinserire il seriale.
 	func getDataByMachId (appId: String, machId: String) async throws -> RemoteLicense {
+		Diagnostics.trace ("getDataByMachId: appId=\(appId) machId=\(machId)")
 		let response = try await get ([
 			("action",    "getDataByMachId"),
 			("appId",     appId),
@@ -136,6 +155,7 @@ actor LicenseServer {
 
 	/// Legge dal server lo stato di un seriale (a chi è intestato, su che macchina).
 	func getData (appId: String, serialId: String) async throws -> RemoteLicense {
+		Diagnostics.trace ("getData: appId=\(appId) serialId=\(serialId)")
 		let response = try await get ([
 			("action",    "getData"),
 			("appId",     appId),
@@ -145,7 +165,9 @@ actor LicenseServer {
 
 		let errorCode = Compat.encapsulateGetValue (srcText: response, label: "errorCode")
 		if !errorCode.isEmpty, errorCode != "0" {
-			throw ServerError.rejected (Compat.encapsulateGetValue (srcText: response, label: "errorMessage"))
+			let message = Compat.encapsulateGetValue (srcText: response, label: "errorMessage")
+			Diagnostics.trace ("getData: rifiutato errorCode=\(errorCode) \"\(message)\"")
+			throw ServerError.rejected (message)
 		}
 		return try parseLicense (from: response)
 	}
@@ -156,6 +178,10 @@ actor LicenseServer {
 	/// Rifiuta se il seriale risulta già attivato su un'altra macchina: è il controllo
 	/// che impedisce di installare la stessa licenza ovunque.
 	func activate (_ license: LicenseData) async throws {
+		Diagnostics.trace ("activate: serialId=\(license.serialId) machId=\(license.machId) "
+						   + "user=\(license.username) email=\(license.email) "
+						   + "exp=\(Compat.du_getDateString (license.expDate)) type=\(license.licType)")
+
 		let validatorText = "activate"
 			+ license.appId + license.serialId + license.machId
 			+ license.username + license.password + license.email
@@ -185,6 +211,8 @@ actor LicenseServer {
 			// significherebbe fabbricare una licenza su richiesta di chi la inserisce.
 			if licenseType (serialId: license.serialId) == .trial,
 			   LicenseServer.isUnknownSerialMessage (errorMessage) {
+				Diagnostics.trace ("activate: trial sconosciuto al server (\"\(errorMessage)\"), "
+								   + "lo carico e riprovo")
 				try? await uploadNewLicense (appId: license.appId,
 											serialId: license.serialId,
 											expDate: license.expDate,
@@ -207,13 +235,19 @@ actor LicenseServer {
 				let retryErrCode = Compat.encapsulateGetValue (srcText: retryResponse, label: "errorCode")
 				if !retryErrCode.isEmpty, retryErrCode != "0" {
 					let retryMsg = Compat.encapsulateGetValue (srcText: retryResponse, label: "errorMessage")
+					Diagnostics.trace ("activate: rifiutato anche dopo il caricamento "
+									   + "(\"\(retryMsg.isEmpty ? errorMessage : retryMsg)\")")
 					throw ServerError.rejected (retryMsg.isEmpty ? errorMessage : retryMsg)
 				}
+				Diagnostics.trace ("activate: riuscita dopo il caricamento del trial")
 				return
 			}
 
+			Diagnostics.trace ("activate: rifiutata errorCode=\(errorCode) \"\(errorMessage)\"")
 			throw ServerError.rejected (errorMessage)
 		}
+
+		Diagnostics.trace ("activate: riuscita")
 	}
 
 
@@ -226,6 +260,9 @@ actor LicenseServer {
 						   email: String = "") async throws {
 
 		let exp = expDate ?? Compat.du_createDate (d: 1, m: 1, y: 2100)
+
+		Diagnostics.trace ("uploadNewLicense: serialId=\(serialId) exp=\(Compat.du_getDateString (exp)) "
+						   + "machId=\(machId.isEmpty ? "—" : machId) email=\(email.isEmpty ? "—" : email)")
 
 		_ = try await get ([
 			("action",    "newLicense"),
@@ -243,34 +280,52 @@ actor LicenseServer {
 
 	/// Stacca il seriale dalla macchina su cui è attivato, con il codice di sblocco.
 	func releaseLicense (appId: String, serialId: String, unlockCode: String) async -> Bool {
+		Diagnostics.trace ("releaseLicense: serialId=\(serialId) unlockCode=\(unlockCode)")
+
 		guard let response = try? await post ([
 			"action":     "releaseSerial",
 			"appId":      appId,
 			"serialId":   serialId,
 			"unlockCode": unlockCode,
-		]) else { return false }
+		]) else {
+			Diagnostics.trace ("releaseLicense: nessuna risposta dal server")
+			return false
+		}
 
-		guard Compat.encapsulateGetValue (srcText: response, label: "released") == "OK" else { return false }
+		guard Compat.encapsulateGetValue (srcText: response, label: "released") == "OK" else {
+			Diagnostics.trace ("releaseLicense: il server non ha rilasciato il seriale")
+			return false
+		}
+
 		let expected = Compat.racId_md5 (appId + serialId + Strings.unlockSuffix.value)
-		return Compat.encapsulateGetValue (srcText: response, label: "validation") == expected
+		let ok = Compat.encapsulateGetValue (srcText: response, label: "validation") == expected
+		Diagnostics.trace ("releaseLicense: \(ok ? "riuscito" : "firma di conferma non valida")")
+		return ok
 	}
 
 
 	/// Rilascio senza codice, autenticato dal triplo md5 del seriale.
 	@discardableResult
 	func fastReleaseLicense (serialId: String) async -> Bool {
+		Diagnostics.trace ("fastReleaseLicense: serialId=\(serialId)")
+
 		let response = try? await post ([
 			"action":         "releaseSerialFast",
 			"serialId":       serialId,
 			"fastUnlockCode": LicenseValidator.fastUnlockCode (serialId: serialId),
 		])
+
+		Diagnostics.trace ("fastReleaseLicense: \(response != nil ? "riuscito" : "nessuna risposta")")
 		return response != nil
 	}
 
 
 	/// Ping leggero, per l'indicatore "Connected to Licensing Server".
 	func isReachable () async -> Bool {
-		(try? await get ([("action", "ping")])) != nil
+		Diagnostics.trace ("isReachable: ping a \(baseUrl)")
+		let reachable = (try? await get ([("action", "ping")])) != nil
+		Diagnostics.trace ("isReachable: \(reachable)")
+		return reachable
 	}
 
 
@@ -332,6 +387,10 @@ actor LicenseServer {
 								  "expDate=\"\(expDateS)\" — mantengo la scadenza locale")
 		}
 
+		Diagnostics.trace ("parseLicense: serialId=\(license.serialId) machId=\(license.machId) "
+						   + "type=\(license.licType) reg=\(regDateS) exp=\(expDateS) "
+						   + "user=\(license.username) email=\(license.email) password=\(license.password)")
+
 		return RemoteLicense (license: license, expDate: parsedExp, regDate: parsedReg)
 	}
 
@@ -372,7 +431,7 @@ actor LicenseServer {
 			throw ServerError.unreachable (.badUrl)
 		}
 
-		Diagnostics.log ("GET \(action) -> \(url.absoluteString)")
+		Diagnostics.trace ("HTTP GET \(action) -> \(url.absoluteString)")
 
 		let data: Data
 		let urlResponse: URLResponse
@@ -390,6 +449,7 @@ actor LicenseServer {
 
 		let status = (urlResponse as? HTTPURLResponse)?.statusCode ?? 0
 		let response = String (decoding: data, as: UTF8.self)
+		Diagnostics.trace ("HTTP GET \(action) <- HTTP \(status), \(response.count) caratteri")
 		Diagnostics.logResponse (action, response, status: status)
 
 		// Fino a ora lo stato HTTP non veniva guardato: una 500 o la pagina di cortesia
@@ -425,11 +485,15 @@ actor LicenseServer {
 			.joined (separator: "&")
 			.utf8)
 
+		Diagnostics.trace ("HTTP POST \(action) -> \(url.absoluteString) "
+						   + "body=\(params.map { "\($0.key)=\($0.value)" }.sorted ().joined (separator: "&"))")
+
 		do {
 			let (data, urlResponse) = try await session.data (for: request)
 			let status = (urlResponse as? HTTPURLResponse)?.statusCode ?? 0
 			let response = String (decoding: data, as: UTF8.self)
 				.replacingOccurrences (of: "<br>", with: "")
+			Diagnostics.trace ("HTTP POST \(action) <- HTTP \(status), \(response.count) caratteri")
 			Diagnostics.logResponse (action, response, status: status)
 
 			guard status == 0 || (200 ..< 300).contains (status) else {
