@@ -411,7 +411,7 @@ public enum UMLicensing {
 			} else {
 				Diagnostics.trace ("acquire: mostro la schermata di scelta")
 				choice = await LicenseWindow.show (title: c.appName,
-												   size: CGSize (width: 460, height: 340),
+												   size: ChooseLicenseView.windowSize,
 												   closed: ChooseOutcome.quit) { finish in
 					ChooseLicenseView (appName: c.appName,
 									   trialExpDays: c.trialExpDays,

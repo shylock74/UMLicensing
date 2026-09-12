@@ -898,3 +898,25 @@ final class StoredSerialPrefixTests: XCTestCase {
 		XCTAssertFalse (usable.isRegistered)
 	}
 }
+
+
+// MARK: - Raggiungibilità del server (rete vera)
+
+/// Spento di default: tocca la rete, e un test che dipende da un server esterno non
+/// deve poter rompere la suite. Si accende quando serve davvero:
+///
+///     UMLICENSING_NETWORK=1 swift test --filter ReachabilityTests
+final class ReachabilityTests: XCTestCase {
+
+	/// `license.asp` non implementa `action=ping` e risponde `200` con zero byte.
+	/// L'indicatore "Connected to Licensing Server" deve leggerlo come raggiungibile:
+	/// prima passava da `get`, che pretende un corpo, e produceva un `UML-E109` ogni
+	/// cinque secondi con l'app che si dichiarava offline mentre attivava le licenze.
+	func testEmptyButValidAnswerCountsAsReachable () async throws {
+		try XCTSkipUnless (ProcessInfo.processInfo.environment ["UMLICENSING_NETWORK"] == "1",
+						   "rete: eseguire con UMLICENSING_NETWORK=1")
+
+		let reachable = await LicenseServer ().isReachable ()
+		XCTAssertTrue (reachable)
+	}
+}

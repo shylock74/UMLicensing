@@ -321,11 +321,39 @@ actor LicenseServer {
 
 
 	/// Ping leggero, per l'indicatore "Connected to Licensing Server".
+	///
+	/// Non passa da `get`: quella pretende un corpo non vuoto, e `license.asp` non
+	/// implementa nessuna azione `ping` — risponde `200` con zero byte. L'indicatore
+	/// diventava così un `UML-E109` ogni cinque secondi, con l'app che diceva
+	/// "Not connected to Licensing Server" mentre le attivazioni funzionavano benissimo.
+	///
+	/// Qui la domanda è una sola: il server risponde? Uno stato 2xx basta, il corpo no —
+	/// se poi quello che risponde sia leggibile lo dicono le chiamate vere.
 	func isReachable () async -> Bool {
 		Diagnostics.trace ("isReachable: ping a \(baseUrl)")
-		let reachable = (try? await get ([("action", "ping")])) != nil
-		Diagnostics.trace ("isReachable: \(reachable)")
-		return reachable
+
+		guard let url = URL (string: baseUrl + "?action=ping") else {
+			Diagnostics.diagnose (.badUrl, "ping", baseUrl)
+			return false
+		}
+
+		do {
+			let (data, response) = try await session.data (from: url)
+			let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+			let reachable = status == 0 || (200 ..< 300).contains (status)
+
+			Diagnostics.trace ("isReachable: HTTP \(status), \(data.count) byte -> \(reachable)")
+
+			if !reachable {
+				Diagnostics.diagnose (.httpStatus, "ping", "HTTP \(status)")
+			}
+			return reachable
+
+		} catch {
+			let code = UMLicensingCode.transport (error)
+			Diagnostics.diagnose (code, "ping", "\((error as NSError).localizedDescription)")
+			return false
+		}
 	}
 
 

@@ -35,18 +35,25 @@ struct ChooseLicenseView: View {
 
 			LicenseHeader (appName: appName, subtitle: "This copy is not registered yet.")
 
-			VStack (alignment: .leading, spacing: 18) {
-				ChoiceRow (title: "Start Free Trial",
-						   detail: "\(trialExpDays) days, full features. We'll email you the serial number.") {
+			// Le due strade sono alternative, non una sopra l'altra in ordine di
+			// preferenza: affiancate si leggono in un colpo solo e nessuna delle due
+			// sembra il ripiego dell'altra.
+			HStack (alignment: .top, spacing: 18) {
+				ChoiceBox (symbol: "hourglass",
+						   title: "Start Free Trial",
+						   detail: "\(trialExpDays) days, full features. We'll email you the serial number.",
+						   button: "Start Free Trial") {
 					finish (.startTrial)
 				}
 
-				ChoiceRow (title: "I Have a Serial Number",
-						   detail: "Enter the serial number you received when you purchased.") {
+				ChoiceBox (symbol: "key.fill",
+						   title: "I Have a Serial Number",
+						   detail: "Enter the serial number you received when you purchased.",
+						   button: "Enter Serial Number") {
 					finish (.insertSerial)
 				}
 			}
-			.frame (maxWidth: .infinity, alignment: .leading)
+			.fixedSize (horizontal: false, vertical: true)
 
 			HStack {
 				UMUICapsuleButton ("Buy a License", style: .gray, size: .normal) { open (purchaseUrl) }
@@ -58,8 +65,14 @@ struct ChooseLicenseView: View {
 			}
 		}
 		.padding (28)
-		.frame (width: 460)
+		.frame (width: ChooseLicenseView.windowSize.width)
 	}
+
+
+	/// La finestra che ospita questa schermata. Sta qui perché larghezza della vista e
+	/// dimensione della `NSWindow` devono cambiare insieme: sono due numeri che, se si
+	/// disallineano, tagliano i box o lasciano una banda vuota sul lato.
+	static let windowSize = CGSize (width: 720, height: 380)
 }
 
 
@@ -368,23 +381,47 @@ private struct LicenseHeader: View {
 }
 
 
-/// Una delle due scelte della prima schermata: il pulsante, e sotto la riga che
-/// spiega cosa succede premendolo.
-private struct ChoiceRow: View {
+/// Una delle due scelte della prima schermata, dentro il suo riquadro: simbolo,
+/// titolo, la riga che spiega cosa succede, e il pulsante in fondo, incolonnati
+/// al centro.
+///
+/// `maxHeight: .infinity` sul contenuto serve a tenere i due box alti uguali anche
+/// quando una delle due descrizioni va a capo una volta in più: affiancati, due
+/// riquadri di altezza diversa si notano subito.
+private struct ChoiceBox: View {
+	let symbol: String
 	let title: String
 	let detail: String
+	let button: String
 	let action: @MainActor () -> Void
 
 	var body: some View {
-		VStack (alignment: .leading, spacing: 6) {
-			UMUICapsuleButton (title, style: .accent, size: .normal) { action () }
+		VStack (spacing: 12) {
+			// Altezza fissa: la chiave è un glifo più alto della clessidra, e senza
+			// questo i due titoli finiscono a quote diverse, che affiancati si vede.
+			Image (systemName: symbol)
+				.font (.system (size: 46))
+				.foregroundColor (.accentColor)
+				.frame (height: 56)
+				.padding (.bottom, 2)
+
+			Text (title)
+				.font (.headline)
+				.multilineTextAlignment (.center)
 
 			Text (detail)
 				.font (.callout)
 				.foregroundStyle (.secondary)
+				.multilineTextAlignment (.center)
 				.fixedSize (horizontal: false, vertical: true)
+
+			Spacer (minLength: 12)
+
+			UMUICapsuleButton (button, style: .accent, size: .normal) { action () }
 		}
-		.frame (maxWidth: .infinity, alignment: .leading)
+		.padding (20)
+		.frame (maxWidth: .infinity, maxHeight: .infinity)
+		.background (UMUIBoxView (cornerRadius: 12, borderWidth: 1.5, foreColor: .accentColor))
 	}
 }
 
