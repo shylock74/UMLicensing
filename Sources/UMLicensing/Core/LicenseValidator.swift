@@ -51,13 +51,12 @@ enum LicenseValidator {
 	/// esiste sul server o se è già stato attivato altrove.
 	static func validateSerial (_ s: String,
 								acceptedApps: [String],
-								previousVersionPrefix: String) -> Bool {
+								previousVersionPrefixes: [String]) -> Bool {
 
 		let appStr = serialToApp (s)
 
 		var accepted = acceptedApps.contains (appStr)
-		if !previousVersionPrefix.isEmpty,
-		   appStr == Compat.strUt_getLeft (previousVersionPrefix, n: 4) {
+		if previousVersionPrefixes.contains (where: { !$0.isEmpty && appStr == Compat.strUt_getLeft ($0, n: 4) }) {
 			accepted = true
 		}
 		guard accepted else { return false }
@@ -69,6 +68,15 @@ enum LicenseValidator {
 		let prefix    = Compat.strUt_getLeft (s, n: p)
 		let validator = Compat.strUt_getRight (s, n: l - p - 1)
 		return serialPrefixValidator (prefix) == validator
+	}
+
+
+	static func validateSerial (_ s: String,
+								acceptedApps: [String],
+								previousVersionPrefix: String) -> Bool {
+		validateSerial (s,
+						acceptedApps: acceptedApps,
+						previousVersionPrefixes: previousVersionPrefix.isEmpty ? [] : [previousVersionPrefix])
 	}
 
 

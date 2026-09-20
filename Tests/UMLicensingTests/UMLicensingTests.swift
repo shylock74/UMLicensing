@@ -832,22 +832,26 @@ final class DiagnosticCodeTests: XCTestCase {
 @MainActor
 final class StoredSerialPrefixTests: XCTestCase {
 
-	private func context (_ appShortId: String, previous: String = "") -> UMLicensing.Context {
-		UMLicensing.Context (appId:                 "media.ulti.TEST",
-							 appName:               "Test",
-							 appShortId:            appShortId,
-							 acceptedApps:          [appShortId],
-							 previousVersionPrefix: previous,
-							 purchaseUrl:           "",
-							 downloadAppUrl:        "",
-							 logoImageUrl:          "",
-							 logoImageAlt:          "",
-							 backgroundRGB:         "",
-							 accentRGB:             "",
-							 mailBody:              "",
-							 trialExpDays:          7,
-							 graceDays:             30,
-							 serverUrl:             nil)
+	private func context (_ appShortId: String, previous: String = "", previousPrefixes: [String] = []) -> UMLicensing.Context {
+		var allPrevious = previousPrefixes
+		if !previous.isEmpty, !allPrevious.contains (previous) {
+			allPrevious.insert (previous, at: 0)
+		}
+		return UMLicensing.Context (appId:                    "media.ulti.TEST",
+									appName:                  "Test",
+									appShortId:               appShortId,
+									acceptedApps:             [appShortId],
+									previousVersionPrefixes:  allPrevious,
+									purchaseUrl:              "",
+									downloadAppUrl:           "",
+									logoImageUrl:             "",
+									logoImageAlt:             "",
+									backgroundRGB:            "",
+									accentRGB:                "",
+									mailBody:                 "",
+									trialExpDays:             7,
+									graceDays:                30,
+									serverUrl:                nil)
 	}
 
 
@@ -896,6 +900,31 @@ final class StoredSerialPrefixTests: XCTestCase {
 		let usable = UMLicensing.usableStoredLicense (LicenseData (), context ("LX30"))
 
 		XCTAssertFalse (usable.isRegistered)
+	}
+
+
+	/// Con `previousVersionPrefixes` passati come lista, tutti i prefissi storici
+	/// indicati continuano ad essere accettati.
+	func testMultiplePreviousVersionPrefixesAreAccepted () {
+		let v1 = LicenseValidator.generateSN (appShortId: "LX10", type: .full, progressiveN: 1)
+		let v2 = LicenseValidator.generateSN (appShortId: "LX20", type: .full, progressiveN: 2)
+		let v3 = LicenseValidator.generateSN (appShortId: "LX30", type: .full, progressiveN: 3)
+		let unrelated = LicenseValidator.generateSN (appShortId: "XX99", type: .full, progressiveN: 4)
+
+		let ctx = context ("LX30", previousPrefixes: ["LX20", "LX10"])
+
+		XCTAssertTrue (ctx.isSerialValid (v3))
+		XCTAssertTrue (ctx.isSerialValid (v2))
+		XCTAssertTrue (ctx.isSerialValid (v1))
+		XCTAssertFalse (ctx.isSerialValid (unrelated))
+
+		let usableV1 = UMLicensing.usableStoredLicense (stored (v1), ctx)
+		let usableV2 = UMLicensing.usableStoredLicense (stored (v2), ctx)
+		let usableUnrelated = UMLicensing.usableStoredLicense (stored (unrelated), ctx)
+
+		XCTAssertEqual (usableV1.serialId, v1)
+		XCTAssertEqual (usableV2.serialId, v2)
+		XCTAssertFalse (usableUnrelated.isRegistered)
 	}
 }
 

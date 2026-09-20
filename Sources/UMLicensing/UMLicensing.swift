@@ -38,6 +38,7 @@ public enum UMLicensing {
 	///     `[appShortId]`. Passa una lista più lunga se l'app ha cambiato nome o se
 	///     accetti i seriali di un altro prodotto.
 	///   - previousVersionPrefix: prefisso della versione precedente, accettato in più.
+	///   - previousVersionPrefixes: lista di prefissi di versioni precedenti, accettati in più.
 	///   - purchaseUrl: pagina di acquisto, aperta dal pulsante "Buy a License".
 	///   - downloadAppUrl: link di download inserito nell'email del trial.
 	///   - logoImageUrl: logo dell'app mostrato in cima all'email del trial.
@@ -53,44 +54,50 @@ public enum UMLicensing {
 	///
 	/// - Returns: `true` se l'app può partire.
 	@discardableResult
-	public static func licensed (appId:                  String,
-								 appName:               String,
-								 appShortId:            String,
-								 acceptedApps:          [String] = [],
-								 previousVersionPrefix: String = "",
-								 purchaseUrl:           String,
-								 downloadAppUrl:        String = "",
-								 logoImageUrl:          String,
-								 logoImageAlt:          String = "",
-								 mailBackgroundColor:   NSColor = .umLicensingMailBackground,
-								 mailAccentColor:       NSColor = .umLicensingMailAccent,
-								 mailBody:              String = "",
-								 trialExpDays:          Int = 7,
-								 graceDays:             Int = 30,
-								 serverUrl:             String? = nil) async -> Bool {
+	public static func licensed (appId:                    String,
+								 appName:                  String,
+								 appShortId:               String,
+								 acceptedApps:             [String] = [],
+								 previousVersionPrefix:    String = "",
+								 previousVersionPrefixes:  [String] = [],
+								 purchaseUrl:              String,
+								 downloadAppUrl:           String = "",
+								 logoImageUrl:             String,
+								 logoImageAlt:             String = "",
+								 mailBackgroundColor:      NSColor = .umLicensingMailBackground,
+								 mailAccentColor:          NSColor = .umLicensingMailAccent,
+								 mailBody:                 String = "",
+								 trialExpDays:             Int = 7,
+								 graceDays:                Int = 30,
+								 serverUrl:                String? = nil) async -> Bool {
 
-		let context = Context (appId:                 appId,
-							   appName:               appName,
-							   appShortId:            appShortId,
-							   acceptedApps:          acceptedApps.isEmpty ? [appShortId] : acceptedApps,
-							   previousVersionPrefix: previousVersionPrefix,
-							   purchaseUrl:           purchaseUrl,
-							   downloadAppUrl:        downloadAppUrl,
-							   logoImageUrl:          logoImageUrl,
-							   logoImageAlt:          logoImageAlt,
+		var allPrevious = previousVersionPrefixes
+		if !previousVersionPrefix.isEmpty, !allPrevious.contains (previousVersionPrefix) {
+			allPrevious.insert (previousVersionPrefix, at: 0)
+		}
+
+		let context = Context (appId:                    appId,
+							   appName:                  appName,
+							   appShortId:               appShortId,
+							   acceptedApps:             acceptedApps.isEmpty ? [appShortId] : acceptedApps,
+							   previousVersionPrefixes:  allPrevious,
+							   purchaseUrl:              purchaseUrl,
+							   downloadAppUrl:           downloadAppUrl,
+							   logoImageUrl:             logoImageUrl,
+							   logoImageAlt:             logoImageAlt,
 							   // I colori vengono risolti subito in componenti sRGB:
 							   // `NSColor` non è `Sendable` e non può viaggiare nel Context.
-							   backgroundRGB:         TrialMailer.rgbComponents (mailBackgroundColor),
-							   accentRGB:             TrialMailer.rgbComponents (mailAccentColor),
-							   mailBody:              mailBody.isEmpty ? TrialMailer.defaultTemplate () : mailBody,
-							   trialExpDays:          trialExpDays,
-							   graceDays:             graceDays,
-							   serverUrl:             serverUrl)
+							   backgroundRGB:            TrialMailer.rgbComponents (mailBackgroundColor),
+							   accentRGB:                TrialMailer.rgbComponents (mailAccentColor),
+							   mailBody:                 mailBody.isEmpty ? TrialMailer.defaultTemplate () : mailBody,
+							   trialExpDays:             trialExpDays,
+							   graceDays:                graceDays,
+							   serverUrl:                serverUrl)
 
 		License.configure (context)
 
 		Diagnostics.trace ("licensed(): appId=\(appId) appName=\(appName) appShortId=\(appShortId) "
-						   + "acceptedApps=\(context.acceptedApps) previousPrefix=\(previousVersionPrefix.isEmpty ? "—" : previousVersionPrefix) "
+						   + "acceptedApps=\(context.acceptedApps) previousPrefixes=\(allPrevious.isEmpty ? "—" : allPrevious.joined (separator: ", ")) "
 						   + "trialExpDays=\(trialExpDays) graceDays=\(graceDays) "
 						   + "serverUrl=\(serverUrl ?? "predefinito")")
 
@@ -162,18 +169,19 @@ public enum UMLicensing {
 		let appId:                 String
 		let appName:               String
 		let appShortId:            String
-		let acceptedApps:          [String]
-		let previousVersionPrefix: String
-		let purchaseUrl:           String
-		let downloadAppUrl:        String
-		let logoImageUrl:          String
-		let logoImageAlt:          String
-		let backgroundRGB:         String
-		let accentRGB:             String
-		let mailBody:              String
-		let trialExpDays:          Int
-		let graceDays:             Int
-		let serverUrl:             String?
+		let acceptedApps:            [String]
+		let previousVersionPrefixes: [String]
+		var previousVersionPrefix:   String { previousVersionPrefixes.first ?? "" }
+		let purchaseUrl:             String
+		let downloadAppUrl:          String
+		let logoImageUrl:            String
+		let logoImageAlt:            String
+		let backgroundRGB:           String
+		let accentRGB:               String
+		let mailBody:                String
+		let trialExpDays:            Int
+		let graceDays:               Int
+		let serverUrl:               String?
 
 		var machId: String { Compat.netU_getMacAddress () }
 
@@ -184,7 +192,7 @@ public enum UMLicensing {
 		func isSerialValid (_ s: String) -> Bool {
 			LicenseValidator.validateSerial (s,
 											 acceptedApps: acceptedApps,
-											 previousVersionPrefix: previousVersionPrefix)
+											 previousVersionPrefixes: previousVersionPrefixes)
 		}
 	}
 
@@ -289,9 +297,9 @@ public enum UMLicensing {
 							  "avvio",
 							  "\(license.serialId) non è di questa app "
 							  + "(accettati: \(c.acceptedApps.joined (separator: ", "))"
-							  + (c.previousVersionPrefix.isEmpty
+							  + (c.previousVersionPrefixes.isEmpty
 								 ? ""
-								 : ", versione precedente: \(c.previousVersionPrefix)")
+								 : ", versioni precedenti: \(c.previousVersionPrefixes.joined (separator: ", "))")
 							  + ") — resta nei preferences ma non vale come licenza")
 
 		return LicenseData ()

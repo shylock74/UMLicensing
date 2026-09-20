@@ -21,11 +21,12 @@ public enum License {
 	public private(set) static var appId:                  String = ""
 	public private(set) static var appName:                String = ""
 	public private(set) static var appShortId:             String = ""
-	public private(set) static var acceptedApps:           [String] = []
-	public private(set) static var previousVersionPrefix:  String = ""
-	public private(set) static var purchaseLicenseURL:     String = ""
-	public private(set) static var downloadAppUrl:         String = ""
-	public private(set) static var trialExpDays:           Int = 7
+	public private(set) static var acceptedApps:              [String] = []
+	public private(set) static var previousVersionPrefix:     String = ""
+	public private(set) static var previousVersionPrefixes:   [String] = []
+	public private(set) static var purchaseLicenseURL:        String = ""
+	public private(set) static var downloadAppUrl:            String = ""
+	public private(set) static var trialExpDays:              Int = 7
 
 	/// `true` dopo un `UMLicensing.licensed()` andato a buon fine.
 	public internal(set) static var licenseValidated = false
@@ -36,14 +37,15 @@ public enum License {
 
 
 	static func configure (_ c: UMLicensing.Context) {
-		appId                 = c.appId
-		appName               = c.appName
-		appShortId            = c.appShortId
-		acceptedApps          = c.acceptedApps
-		previousVersionPrefix = c.previousVersionPrefix
-		purchaseLicenseURL    = c.purchaseUrl
-		downloadAppUrl        = c.downloadAppUrl
-		trialExpDays          = c.trialExpDays
+		appId                   = c.appId
+		appName                 = c.appName
+		appShortId              = c.appShortId
+		acceptedApps            = c.acceptedApps
+		previousVersionPrefixes = c.previousVersionPrefixes
+		previousVersionPrefix   = c.previousVersionPrefix
+		purchaseLicenseURL      = c.purchaseUrl
+		downloadAppUrl          = c.downloadAppUrl
+		trialExpDays            = c.trialExpDays
 	}
 
 
@@ -80,7 +82,7 @@ public enum License {
 	public static func validateSerial (_ s: String) -> Bool {
 		LicenseValidator.validateSerial (s,
 										 acceptedApps: acceptedApps,
-										 previousVersionPrefix: previousVersionPrefix)
+										 previousVersionPrefixes: previousVersionPrefixes)
 	}
 
 	public static func generateSN (appId: String, type: licenseType, progressiveN: Int) -> String {

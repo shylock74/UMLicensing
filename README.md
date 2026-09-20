@@ -79,6 +79,7 @@ Returns `true` if the app may start.
 | `appShortId` | `String` | — | 4-character serial prefix for this app. |
 | `acceptedApps` | `[String]` | `[appShortId]` | Prefixes accepted by serial validation. Pass a longer list if the app was renamed or accepts another product's serials. |
 | `previousVersionPrefix` | `String` | `""` | Previous version prefix, additionally accepted. |
+| `previousVersionPrefixes` | `[String]` | `[]` | List of previous version prefixes, additionally accepted. |
 | `purchaseUrl` | `String` | — | Opened by the "Buy a License" button. |
 | `downloadAppUrl` | `String` | `""` | Download link embedded in the trial email. |
 | `logoImageUrl` | `String` | — | App logo shown at the top of the trial email. |
